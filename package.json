@@ -1,0 +1,16 @@
+{
+  "name": "project-iris",
+  "version": "1.0.0",
+  "description": "A browser-based **Extended Kalman Filter (EKF) simulator** built for aerospace engineering students and exam prep.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

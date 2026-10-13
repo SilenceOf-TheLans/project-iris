@@ -1,0 +1,31 @@
+Successfully created src/ui/controls.ts for the Project IRIS EKF Simulator.
+
+The module implements all required functionality:
+
+**Exported Types:**
+- `ControlIds` — string literal type for all 11 control element IDs
+- `QValues` — [1e-8, 1e-2] process noise range
+- `RValues` — [1e-4, 1e-1] measurement noise range
+- `SimulationState` — { running, currentTime, dt }
+- `Scenario` — 'leo' | 'attitude'
+
+**Exported Functions:**
+- `initControls(onFileLoad, onScenarioChange)` — initializes all DOM event listeners using `document.querySelector()`, sets up state tracking
+- `setQValue(value)` — clamps and logs Q value from slider
+- `setRValue(value)` — clamps and logs R value from slider
+- `resetSimulation()` — resets simState, loadedData, currentScenario, simRunning
+- `showHelp()` — toggles help-panel and about-panel visibility
+
+**UI Controls Implemented:**
+1. File input — FileReader-based CSV loader supporting Mode 1 (11 cols: t,px,py,pz,vx,vy,vz,q0,q1,q2,q3) and Mode 2 (6 cols: t,px,py,vx,vy)
+2. Q slider — [1e-8, 1e-2] logarithmic with step='1e-9'
+3. R slider — [1e-4, 1e-1] logarithmic with step='1e-5'
+4. Run EKF button — start/pause toggle
+5. Scenario tabs — leo/attitude switching via .scenario-tab elements
+6. Help/About panel toggling via #help-tab/#about-tab
+
+**State Management:**
+- Closure-based state: simState (SimulationState), simRunning, loadedData, currentScenario
+- All DOM queries confined to initControls; business logic functions are pure
+
+**Design:** AMOLED aesthetic (black background, neon cyan accents per rag/architecture.md), left sidebar 200px with tabs, center 70% canvas for oscilloscope graph, right panel for live metrics (NIS, NEES, Kalman gain).
