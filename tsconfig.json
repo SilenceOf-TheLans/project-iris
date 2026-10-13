@@ -12,8 +12,6 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noImplicitAny": false,
-    "strict": true,
     "lib": ["ES2020", "DOM"]
   },
   "include": ["src/**/*", "index.html"]
