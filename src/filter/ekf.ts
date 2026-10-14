@@ -248,6 +248,16 @@ export class EKF {
     this.P = { data: options.P0.data.map(row => [...row]), rows: options.P0.rows, cols: options.P0.cols };
   }
 
+  /** Update the process noise Q matrix (or builder function) */
+  setQ(newQ: Matrix | ((dt: number) => Matrix)): void {
+    this.Q = newQ;
+  }
+
+  /** Update the measurement noise R matrix (or builder function) */
+  setR(newR: Matrix | ((x: Matrix) => Matrix)): void {
+    this.R = newR;
+  }
+
   /** predict(dt) – predict one step forward */
   predict(dt: number): void {
     // x̂⁻ = f(x̂₋₁, u=0, w=0)

@@ -1,396 +1,144 @@
 /**
  * UI Controls module for the Project IRIS EKF Simulator.
- *
- * Handles all user interface interactions: file loading, slider controls,
- * button actions, scenario switching, and help panel toggling.
- * AMOLED aesthetic: black background, neon cyan accents.
+ * File loading, log-scale noise sliders, run/reset, scenario tabs, help panels.
  */
 
-// ---------------------------------------------------------------------------
-// Module-level state (initialized by initControls, accessed by exported functions)
-// ---------------------------------------------------------------------------
+import { loadCSVText } from '../data/io';
 
-/**
- * String literal type for all control element IDs.
- */
-export type ControlIds =
-  | 'file-input'
-  | 'q-slider'
-  | 'r-slider'
-  | 'run-button'
-  | 'toggle-kf-button'
-  | 'scenario-leo'
-  | 'scenario-attitude'
-  | 'settings-tab'
-  | 'help-tab'
-  | 'help-panel'
-  | 'about-panel';
+export type Scenario = 'leo' | 'attitude';
 
-/**
- * Process noise magnitude range: Q [1e-8, 1e-2] logarithmic scale.
- */
-export const QValues: [number, number] = [1e-8, 1e-2];
-
-/**
- * Measurement noise magnitude range: R [1e-4, 1e-1] logarithmic scale.
- */
-export const RValues: [number, number] = [1e-4, 1e-1];
-
-/**
- * Simulation state tracking.
- */
 export interface SimulationState {
   running: boolean;
   currentTime: number;
   dt: number;
 }
 
-/**
- * Scenario identifier: 'leo' (Workcase A: LEO orbit) or 'attitude' (Workcase B: attitude).
- */
-export type Scenario = 'leo' | 'attitude';
+export const Q_RANGE: [number, number] = [1e-12, 1e-2];
+export const R_RANGE: [number, number] = [1e-2, 1e3];
 
-// Internal module state - shared with exported functions
-let simState: SimulationState = {
-  running: false,
-  currentTime: 0,
-  dt: 0.01,
-};
-let simRunning = false;
-let loadedData: any = null;
-let currentScenario: Scenario = 'leo';
+const SLIDER_MAX = 1000;
 
-// ---------------------------------------------------------------------------
+function sliderToLog(pos: number, min: number, max: number): number {
+  const t = Math.min(1, Math.max(0, pos / SLIDER_MAX));
+  const lmin = Math.log10(min);
+  const lmax = Math.log10(max);
+  return Math.pow(10, lmin + (lmax - lmin) * t);
+}
 
-/**
- * Initializes all control event listeners.
- *
- * Sets up event listeners for:
- *   - File input: browse and load CSV (Mode 1 or Mode 2)
- *   - Q slider: update process noise covariance magnitude
- *   - R slider: update measurement noise covariance magnitude
- *   - Run EKF button: start/pause the EKF simulation run
- *   - Scenario tabs: switch between LEO and attitude workcases
- *   - Help/About panel toggling
- *
- * @param onFileLoad - Callback invoked when a CSV file is successfully loaded.
- *                     Receives the parsed LoadedData object.
- * @param onScenarioChange - Callback invoked when the user switches scenarios.
- *                         Receives the new Scenario string ('leo' | 'attitude').
- */
+function logToSlider(value: number, min: number, max: number): number {
+  const lmin = Math.log10(min);
+  const lmax = Math.log10(max);
+  const lv = Math.log10(Math.min(max, Math.max(min, value)));
+  return Math.round(((lv - lmin) / (lmax - lmin)) * SLIDER_MAX);
+}
+
 export function initControls(
   onFileLoad: (data: any) => void,
-  onScenarioChange: (scenario: Scenario) => void
+  onScenarioChange: (scenario: Scenario) => void,
+  onQValueChange?: (value: number) => void,
+  onRValueChange?: (value: number) => void,
+  onRunToggle?: () => boolean,
+  onReset?: () => void,
 ): void {
-  // Reset internal state
-  simState.running = false;
-  simState.currentTime = 0;
-  simState.dt = 0.01;
-  simRunning = false;
-  loadedData = null;
-  currentScenario = 'leo';
+  const fileInput = document.querySelector<HTMLInputElement>('#file-input');
+  fileInput?.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        const data = loadCSVText(text);
+        onFileLoad(data);
+      } catch (err) {
+        logMessage(err instanceof Error ? err.message : String(err));
+      }
+    };
+    reader.onerror = () => logMessage(`Failed to read file: ${file.name}`);
+    reader.readAsText(file);
+    fileInput.value = '';
+  });
 
-  // --- File input handler ---
-  const fileInput = document.querySelector< HTMLInputElement >('#file-input');
-  if (fileInput) {
-    fileInput.addEventListener('change', (event) => {
-      const target = event.target as HTMLInputElement;
-      const file = target.files?.[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = e.target?.result as string | undefined;
-        if (text === undefined) return;
-        try {
-          const data = loadCSVText(text);
-          loadedData = data;
-          currentScenario = detectScenario(data);
-          onFileLoad(data);
-          onScenarioChange(currentScenario);
-        } catch (err) {
-          console.error('CSV load error:', err);
-        }
-      };
-      reader.onerror = () => {
-        console.error('FileReader error');
-      };
-      reader.readAsText(file);
-    });
-  }
-
-  // --- Q (process noise) slider ---
-  const qSlider = document.querySelector< HTMLInputElement >('#q-slider');
+  const qSlider = document.querySelector<HTMLInputElement>('#q-slider');
+  const qDisplay = document.querySelector<HTMLElement>('#q-value');
   if (qSlider) {
-    qSlider.setAttribute('min', QValues[0].toString());
-    qSlider.setAttribute('max', QValues[1].toString());
-    qSlider.setAttribute('step', '1e-9');
-
+    const initialQ = 1e-6;
+    qSlider.value = String(logToSlider(initialQ, Q_RANGE[0], Q_RANGE[1]));
+    if (qDisplay) qDisplay.textContent = initialQ.toExponential(1);
     qSlider.addEventListener('input', () => {
-      const value = parseFloat(qSlider.value);
-      setQValue(value);
-      const qDisplay = document.querySelector< HTMLElement >('#q-value');
-      if (qDisplay) {
-        qDisplay.textContent = value.toExponential(3);
-      }
+      const value = sliderToLog(parseFloat(qSlider.value), Q_RANGE[0], Q_RANGE[1]);
+      if (qDisplay) qDisplay.textContent = value.toExponential(1);
+      onQValueChange?.(value);
     });
   }
 
-  // --- R (measurement noise) slider ---
-  const rSlider = document.querySelector< HTMLInputElement >('#r-slider');
+  const rSlider = document.querySelector<HTMLInputElement>('#r-slider');
+  const rDisplay = document.querySelector<HTMLElement>('#r-value');
   if (rSlider) {
-    rSlider.setAttribute('min', RValues[0].toString());
-    rSlider.setAttribute('max', RValues[1].toString());
-    rSlider.setAttribute('step', '1e-5');
-
+    const initialR = 10;
+    rSlider.value = String(logToSlider(initialR, R_RANGE[0], R_RANGE[1]));
+    if (rDisplay) rDisplay.textContent = initialR.toExponential(1);
     rSlider.addEventListener('input', () => {
-      const value = parseFloat(rSlider.value);
-      setRValue(value);
-      const rDisplay = document.querySelector< HTMLElement >('#r-value');
-      if (rDisplay) {
-        rDisplay.textContent = value.toExponential(3);
-      }
+      const value = sliderToLog(parseFloat(rSlider.value), R_RANGE[0], R_RANGE[1]);
+      if (rDisplay) rDisplay.textContent = value.toExponential(1);
+      onRValueChange?.(value);
     });
   }
 
-  // --- Run EKF button ---
-  const runButton = document.querySelector< HTMLButtonElement >('#run-button');
-  if (runButton) {
+  const runButton = document.querySelector<HTMLButtonElement>('#run-button');
+  if (runButton && !((runButton as any).__wired)) {
+    (runButton as any).__wired = true;
     runButton.addEventListener('click', () => {
-      simRunning = !simRunning;
-      runButton.textContent = simRunning ? 'Pause EKF' : 'Run EKF';
-      console.log('EKF', simRunning ? 'running' : 'paused');
+      const running = onRunToggle ? onRunToggle() : false;
+      runButton.textContent = running ? 'Pause EKF' : 'Run EKF';
     });
   }
 
-  // --- Scenario tab switching ---
-  const scenarioTabs = document.querySelectorAll< HTMLButtonElement >(
-    '.scenario-tab'
-  );
+  const resetButton = document.querySelector<HTMLButtonElement>('#reset-button');
+  if (resetButton && !((resetButton as any).__wired)) {
+    (resetButton as any).__wired = true;
+    resetButton.addEventListener('click', () => {
+      onReset?.();
+      if (runButton) runButton.textContent = 'Run EKF';
+    });
+  }
+
+  const scenarioTabs = document.querySelectorAll<HTMLButtonElement>('.scenario-tab');
   scenarioTabs.forEach((tab) => {
-    tab.addEventListener('click', (event) => {
-      const target = event.target as HTMLButtonElement;
-      const scenario = target.dataset.scenario as Scenario;
-      if (scenario && onScenarioChange) {
-        onScenarioChange(scenario);
-      }
+    tab.addEventListener('click', () => {
+      const scenario = tab.dataset.scenario as Scenario;
+      if (scenario !== 'leo' && scenario !== 'attitude') return;
+      scenarioTabs.forEach((t) => t.classList.toggle('active', t === tab));
+      onScenarioChange(scenario);
+      if (runButton) runButton.textContent = 'Run EKF';
     });
   });
 
-  // --- Help/About panel toggling ---
-  const helpTab = document.querySelector< HTMLButtonElement >('#help-tab');
-  const aboutTab = document.querySelector< HTMLButtonElement >('#about-tab');
-  const helpPanel = document.querySelector< HTMLElement >('#help-panel');
-  const aboutPanel = document.querySelector< HTMLElement >('#about-panel');
-
-  const togglePanel = (panel: HTMLElement | null) => {
-    if (!panel) return;
-    const isVisible = panel.style.display !== 'none';
-    panel.style.display = isVisible ? 'none' : 'block';
-  };
-
-  if (helpTab && helpPanel) {
-    helpTab.addEventListener('click', () => togglePanel(helpPanel));
-  }
-  if (aboutTab && aboutPanel) {
-    aboutTab.addEventListener('click', () => togglePanel(aboutPanel));
-  }
+  const helpTab = document.querySelector<HTMLButtonElement>('#help-tab');
+  const aboutTab = document.querySelector<HTMLButtonElement>('#about-tab');
+  const helpPanel = document.querySelector<HTMLElement>('#help-panel');
+  const aboutPanel = document.querySelector<HTMLElement>('#about-panel');
+  helpTab?.addEventListener('click', () => {
+    helpPanel?.classList.toggle('open');
+    aboutPanel?.classList.remove('open');
+  });
+  aboutTab?.addEventListener('click', () => {
+    aboutPanel?.classList.toggle('open');
+    helpPanel?.classList.remove('open');
+  });
 }
 
-/**
- * Updates the process noise Q value from the slider.
- *
- * @param value - The new Q value (magnitude), typically from the Q slider.
- *                Range: [1e-8, 1e-2] logarithmic scale.
- */
-export function setQValue(value: number): void {
-  const clamped = Math.max(QValues[0], Math.min(QValues[1], value));
-  console.log('Q set to:', clamped.toExponential(3));
+export function setRunButtonLabel(running: boolean): void {
+  const runButton = document.querySelector<HTMLButtonElement>('#run-button');
+  if (runButton) runButton.textContent = running ? 'Pause EKF' : 'Run EKF';
 }
 
-/**
- * Updates the measurement noise R value from the slider.
- *
- * @param value - The new R value (magnitude), typically from the R slider.
- *                Range: [1e-4, 1e-1] logarithmic scale.
- */
-export function setRValue(value: number): void {
-  const clamped = Math.max(RValues[0], Math.min(RValues[1], value));
-  console.log('R set to:', clamped.toExponential(3));
-}
-
-/**
- * Resets the EKF simulation state.
- *
- * Clears loaded data, resets the simulation time, and resets UI to initial state.
- */
-export function resetSimulation(): void {
-  simState.running = false;
-  simState.currentTime = 0;
-  simState.dt = 0.01;
-  loadedData = null;
-  currentScenario = 'leo';
-  simRunning = false;
-  console.log('Simulation reset');
-}
-
-/**
- * Toggles the help panel visibility.
- *
- * Shows or hides the help/About panel in the left-side sidebar.
- */
-export function showHelp(): void {
-  const helpPanel = document.querySelector< HTMLElement >('#help-panel');
-  const aboutPanel = document.querySelector< HTMLElement >('#about-panel');
-  if (helpPanel) {
-    helpPanel.style.display =
-      helpPanel.style.display === 'none' ? 'block' : 'none';
-  }
-  if (aboutPanel) {
-    aboutPanel.style.display =
-      aboutPanel.style.display === 'none' ? 'block' : 'none';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// CSV text parser (reuses logic from src/data/io.ts)
-// ---------------------------------------------------------------------------
-
-/**
- * Parses a CSV text string into LoadedData.
- * Auto-detects mode from the header row.
- * Throws on malformed CSV.
- *
- * @param text - Raw CSV text string
- * @returns LoadedData value with time, position, velocity, and optional quaternion arrays
- */
-function loadCSVText(text: string): any {
-  const lines = text.trim().split('\n').filter(
-    (line: string) => line.trim().length > 0
-  );
-
-  if (lines.length === 0) {
-    throw new Error('Empty CSV text');
-  }
-
-  const header = lines[0];
-  const tokens = header.split(',').map((field) => field.trim());
-  const first = tokens[0].toLowerCase().trim();
-
-  if (first !== 't') {
-    throw new Error(`Invalid CSV header: expected 't' as first column, got '${first}'`);
-  }
-
-  let mode: 'mode1' | 'mode2';
-  if (tokens.length === 11) {
-    mode = 'mode1';
-  } else if (tokens.length === 6) {
-    mode = 'mode2';
-  } else if (tokens[1]?.toLowerCase()?.startsWith('p') && tokens.length === 6) {
-    mode = 'mode2';
-  } else if (tokens[1]?.toLowerCase()?.startsWith('q') && tokens.length === 11) {
-    mode = 'mode1';
+export function logMessage(msg: string): void {
+  const el = document.querySelector<HTMLElement>('#log');
+  if (el) {
+    el.textContent = msg;
+    console.warn(msg);
   } else {
-    throw new Error(
-      `Unrecognised CSV header (${tokens.length} columns). Expected Mode 1 (11 columns) or Mode 2 (6 columns).`
-    );
+    console.warn(msg);
   }
-
-  const times: number[] = [];
-  const positions: number[][] = [];
-  const velocities: number[][] = [];
-  const quaternions: number[][] | undefined = mode === 'mode1' ? [] : undefined;
-
-  for (let i = 1; i < lines.length; i++) {
-    const row = lines[i].split(',').map((field) => field.trim());
-
-    if (row.length === 0 || row.every((f) => f === '')) {
-      continue;
-    }
-
-    if (mode === 'mode1' && row.length !== 11) {
-      throw new Error(
-        `Mode 1 row ${i + 1}: expected 11 fields, got ${row.length}`
-      );
-    }
-    if (mode === 'mode2' && row.length !== 6) {
-      throw new Error(
-        `Mode 2 row ${i + 1}: expected 6 fields, got ${row.length}`
-      );
-    }
-
-    const t = parseFloat(row[0]);
-    if (isNaN(t)) {
-      throw new Error(`Row ${i + 1}: invalid time value '${row[0]}'`);
-    }
-    times.push(t);
-
-    if (mode === 'mode1') {
-      const px = parseFloat(row[1]);
-      const py = parseFloat(row[2]);
-      const pz = parseFloat(row[3]);
-      const vx = parseFloat(row[4]);
-      const vy = parseFloat(row[5]);
-      const vz = parseFloat(row[6]);
-      const q0 = parseFloat(row[7]);
-      const q1 = parseFloat(row[8]);
-      const q2 = parseFloat(row[9]);
-      const q3 = parseFloat(row[10]);
-
-      if (
-        isNaN(px) || isNaN(py) || isNaN(pz) || isNaN(vx) || isNaN(vy) || isNaN(vz)
-      ) {
-        throw new Error(
-          `Row ${i + 1}: invalid numeric value in position/velocity fields`
-        );
-      }
-
-      positions.push([px, py, pz]);
-      velocities.push([vx, vy, vz]);
-      quaternions!.push([q0, q1, q2, q3]);
-    } else {
-      const px = parseFloat(row[1]);
-      const py = parseFloat(row[2]);
-      const vx = parseFloat(row[3]);
-      const vy = parseFloat(row[4]);
-
-      if (isNaN(px) || isNaN(py) || isNaN(vx) || isNaN(vy)) {
-        throw new Error(
-          `Row ${i + 1}: invalid numeric value in position/velocity fields`
-        );
-      }
-
-      positions.push([px, py, 0]);
-      velocities.push([vx, vy, 0]);
-    }
-  }
-
-  if (times.length === 0) {
-    return {
-      time: [],
-      position: [],
-      velocity: [],
-      quaternion: undefined,
-    };
-  }
-
-  return {
-    time: times,
-    position: positions,
-    velocity: velocities,
-    quaternion: quaternions,
-  };
 }
-
-/**
- * Detects the CSV scenario mode from loaded data.
- * @param data - Parsed CSV data
- * @returns 'leo' for Mode 1, 'attitude' for Mode 2, or 'leo' by default
- */
-function detectScenario(data: any): Scenario {
-  if (data && data.quaternion && data.quaternion.length > 0) {
-    return 'leo';
-  }
-  return 'attitude';
-}
-

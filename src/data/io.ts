@@ -299,7 +299,7 @@ export function generateSyntheticPass(
 
   const altitude: number = opts.altitude;
   const duration: number = opts.duration;
-  const numPoints: number = Math.max(1, Math.min(opts.points, 200));
+  const numPoints: number = Math.max(1, Math.min(opts.points, 5000));
 
   // Validate
   if (duration <= 0) {
