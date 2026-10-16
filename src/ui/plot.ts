@@ -423,11 +423,6 @@ function redrawPlot(): void {
   drawMeasurements(ctx, graphRect);
   if (plotState.covarianceEllipse) drawCovarianceEllipse(ctx, graphRect, plotState.covarianceEllipse);
   if (plotState.showLegend) drawLegend(ctx, graphRect);
-
-  // axis units
-  ctx.fillStyle = COLORS.legendText;
-  ctx.font = '11px monospace';
-  ctx.fillText('km', graphRect.x + graphRect.width - 18, graphRect.y + graphRect.height + 16);
 }
 
 function spanGuarded(min: number, max: number): [number, number] {
@@ -459,33 +454,132 @@ function dataToPixelScaleX(graphRect: GraphRect): number {
   return (graphRect.width * (1 - 2 * PAD)) / (mx - mn);
 }
 
+/**
+ * Compute "nice" tick positions for an axis so gridlines track the data
+ * (and therefore zoom/pan) instead of fixed pixel spacing.
+ * Returns the tick values plus the step used (for label formatting).
+ */
+/** Tick values + step for tests/embedding. Exported for unit testing. */
+export function niceTicks(min: number, max: number, target: number): { ticks: number[]; step: number } {
+  const span = max - min;
+  if (!isFinite(span) || span <= 0 || !(target > 0)) return { ticks: [], step: 1 };
+  const rawStep = span / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const norm = rawStep / mag;
+  let mult = 10;
+  if (norm <= 1) mult = 1;
+  else if (norm <= 2) mult = 2;
+  else if (norm <= 2.5) mult = 2.5;
+  else if (norm <= 5) mult = 5;
+  const step = mult * mag;
+  const ticks: number[] = [];
+  let v = Math.ceil(min / step - 1e-9) * step;
+  for (let i = 0; i < 64 && v <= max + step * 1e-9; i++) {
+    ticks.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+    v += step;
+  }
+  return { ticks, step };
+}
+
+export function tickDecimals(step: number): number {
+  if (!isFinite(step) || step <= 0) return 0;
+  return Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+}
+
+export function formatTick(v: number, decimals: number): string {
+  const s = v.toFixed(decimals);
+  // Normalize "-0.00" -> "0.00"
+  if (parseFloat(s) === 0) return (0).toFixed(decimals);
+  return s;
+}
+
 function drawGrid(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
+  const r = effRanges();
+  const [x0, x1] = spanGuarded(r.x0, r.x1);
+  const [y0, y1] = spanGuarded(r.y0, r.y1);
+  const { x, y, width, height } = graphRect;
+
   ctx.strokeStyle = COLORS.grid;
   ctx.lineWidth = 1;
-  const { x, y, width, height } = graphRect;
   ctx.strokeRect(x, y, width, height);
-  const stepX = Math.max(24, width / 8);
-  const stepY = Math.max(24, height / 8);
+
+  // Gridlines at data-space ticks so they move with zoom/pan.
+  const { ticks: xTicks } = niceTicks(x0, x1, Math.max(3, Math.floor(width / 110)));
+  const { ticks: yTicks } = niceTicks(y0, y1, Math.max(3, Math.floor(height / 70)));
   ctx.beginPath();
-  for (let gx = x + stepX; gx < x + width; gx += stepX) { ctx.moveTo(gx, y); ctx.lineTo(gx, y + height); }
-  for (let gy = y + stepY; gy < y + height; gy += stepY) { ctx.moveTo(x, gy); ctx.lineTo(x + width, gy); }
+  for (const t of xTicks) {
+    const gx = dataXToPixel(t, graphRect);
+    ctx.moveTo(gx, y);
+    ctx.lineTo(gx, y + height);
+  }
+  for (const t of yTicks) {
+    const gy = dataYToPixel(t, graphRect);
+    ctx.moveTo(x, gy);
+    ctx.lineTo(x + width, gy);
+  }
   ctx.stroke();
 }
 
 function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
-  ctx.strokeStyle = COLORS.axis;
-  ctx.lineWidth = 1;
+  const r = effRanges();
+  const [x0, x1] = spanGuarded(r.x0, r.x1);
+  const [y0, y1] = spanGuarded(r.y0, r.y1);
   const { x, y, width, height } = graphRect;
+
+  ctx.save();
+  // Data axes (x=0 / y=0) when they fall inside the visible view.
+  ctx.strokeStyle = COLORS.axis;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(x, y + height);
-  ctx.lineTo(x + width, y + height);
-  ctx.moveTo(x, y);
-  ctx.lineTo(x, y + height);
+  if (x0 <= 0 && 0 <= x1) {
+    const zx = dataXToPixel(0, graphRect);
+    ctx.moveTo(zx, y);
+    ctx.lineTo(zx, y + height);
+  }
+  if (y0 <= 0 && 0 <= y1) {
+    const zy = dataYToPixel(0, graphRect);
+    ctx.moveTo(x, zy);
+    ctx.lineTo(x + width, zy);
+  }
   ctx.stroke();
+
+  // Axis titles with units.
   ctx.fillStyle = COLORS.legendText;
   ctx.font = '11px monospace';
-  ctx.fillText('x', x + width - 8, y + height - 6);
-  ctx.fillText('y', x + 6, y + 12);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('x (km)', x + width / 2, y + height + 20);
+
+  // Tick labels in the margins (always shown, even if grid is off).
+  const xTarget = Math.max(3, Math.floor(width / 110));
+  const yTarget = Math.max(3, Math.floor(height / 70));
+  const { ticks: xTicks, step: xStep } = niceTicks(x0, x1, xTarget);
+  const { ticks: yTicks, step: yStep } = niceTicks(y0, y1, yTarget);
+  const xDec = tickDecimals(xStep);
+  const yDec = tickDecimals(yStep);
+  ctx.font = '10px monospace';
+  for (const t of xTicks) {
+    ctx.fillText(formatTick(t, xDec), dataXToPixel(t, graphRect), y + height + 5);
+  }
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (const t of yTicks) {
+    ctx.fillText(formatTick(t, yDec), x - 6, dataYToPixel(t, graphRect));
+  }
+  let maxLabelW = 0;
+  for (const t of yTicks) {
+    maxLabelW = Math.max(maxLabelW, ctx.measureText(formatTick(t, yDec)).width);
+  }
+  const titleX = Math.max(10, x - 10 - maxLabelW - 12);
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.save();
+  ctx.translate(titleX, y + height / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('y (km)', 0, 0);
+  ctx.restore();
+  ctx.restore();
 }
 
 function drawTraces(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {

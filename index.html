@@ -4,10 +4,90 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Project IRIS - EKF Simulator</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
-  <div id="app"></script>
-  <script type="module" src="src/main.ts"></script>
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-title">Project IRIS — EKF Simulator</span>
+    </div>
+    <div id="statusbar">
+      <span id="status-scenario">scenario: leo</span>
+      <span id="status-points">points: 0</span>
+      <span id="status-time">t: 0.0 s</span>
+      <span id="status-state">idle</span>
+    </div>
+  </header>
+
+  <div id="app">
+    <!-- Left sidebar -->
+    <aside id="sidebar">
+      <div class="section">
+        <label for="file-input" class="section-label">Load CSV Data</label>
+        <input type="file" id="file-input" accept=".csv">
+        <div class="hint">Mode 1: t,px,py,pz,vx,vy,vz,q0..q3 · Mode 2: t,px,py,vx,vy</div>
+      </div>
+
+      <div class="section">
+        <h3 class="section-title">Scenario</h3>
+        <div class="tabs-group">
+          <button class="scenario-tab active" data-scenario="leo">LEO Orbit</button>
+          <button class="scenario-tab" data-scenario="attitude">Attitude (2D)</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <label for="q-slider" class="section-label">Process Noise Q <span id="q-value" class="value-display">1.0e-6</span></label>
+        <input type="range" id="q-slider" min="0" max="1000" step="1" value="500">
+      </div>
+
+      <div class="section">
+        <label for="r-slider" class="section-label">Measurement Noise R <span id="r-value" class="value-display">1.0e+1</span></label>
+        <input type="range" id="r-slider" min="0" max="1000" step="1" value="500">
+      </div>
+
+      <div class="section btn-row">
+        <button id="run-button">Run EKF</button>
+        <button id="reset-button" class="secondary">Reset</button>
+      </div>
+
+      <div class="section stats">
+        <div class="stat-row"><span>Truth (km)</span><span id="stat-truth">—</span></div>
+        <div class="stat-row"><span>Estimate (km)</span><span id="stat-est">—</span></div>
+        <div class="stat-row"><span>Error (km)</span><span id="stat-err">—</span></div>
+      </div>
+
+      <div class="section">
+        <button id="help-tab" class="help-button">Help</button>
+        <button id="about-tab" class="help-button">About</button>
+      </div>
+
+      <div id="help-panel" class="help-panel">
+        <h3>Project IRIS — EKF Simulator</h3>
+        <p>Extended Kalman Filter simulator for aerospace exam prep.</p>
+        <p>Load a CSV file or use the synthetic LEO pass. Press Run EKF.</p>
+        <p>LEO: 6-state orbit, range + range-rate updates. Attitude: 4-state 2D position tracking.</p>
+      </div>
+
+      <div id="about-panel" class="help-panel">
+        <h3>About</h3>
+        <p>EKF Simulator for ITI → University aerospace engineering exam.</p>
+      </div>
+
+      <div id="log" class="log" aria-live="polite"></div>
+    </aside>
+
+    <!-- Main content area -->
+    <main id="main-content">
+      <div id="canvas-wrap">
+        <canvas id="plot-canvas"></canvas>
+        <div id="plot-hint">Scroll to zoom · Drag to pan · Double-click to reset</div>
+        <div id="plot-zoom" title="Zoom level relative to auto-fit (double-click canvas to reset)"></div>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
