@@ -37,7 +37,7 @@ function totalAcceleration(r: number[]): number[] {
   const ry = r[1];
   const rz = r[2];
 
-  const rNorm = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  const rNorm = Math.max(1e-6, Math.sqrt(rx * rx + ry * ry + rz * rz));
 
   // Two-body: a = -μ * r / ‖r‖³
   const invR3 = 1 / (rNorm * rNorm * rNorm);
@@ -45,15 +45,17 @@ function totalAcceleration(r: number[]): number[] {
   const ayTwoBody = -MU * ry * invR3;
   const azTwoBody = -MU * rz * invR3;
 
-  // J2 perturbation: a_J2 = -μ * J2 * (R_E² / ‖r‖⁴) * [1 - 3*(z/‖r‖)²] * [x, y, z]ᵀ
+  // J2 perturbation per Vallado: k = (3/2)·μ·J2·R_E² / ‖r‖⁵, s = z²/‖r‖²
+  // a_x = -k·x·(1 − 5·s), a_y = -k·y·(1 − 5·s), a_z = -k·z·(3 − 5·s)
+  // (~1e-2 m/s² at LEO vs ~8.7 m/s² two-body).
   const r2 = rNorm * rNorm;
-  const r4 = r2 * r2;
-  const factor = -MU * J2 * (RE * RE) / r4;
-  const coeff = 1 - 3 * (rz / rNorm) ** 2;
+  const r5 = r2 * r2 * rNorm;
+  const k = (3 / 2) * MU * J2 * (RE * RE) / r5;
+  const s = (rz * rz) / r2;
 
-  const axJ2 = factor * coeff * rx;
-  const ayJ2 = factor * coeff * ry;
-  const azJ2 = factor * coeff * rz;
+  const axJ2 = -k * rx * (1 - 5 * s);
+  const ayJ2 = -k * ry * (1 - 5 * s);
+  const azJ2 = -k * rz * (3 - 5 * s);
 
   // Total acceleration
   return [axTwoBody + axJ2, ayTwoBody + ayJ2, azTwoBody + azJ2];
@@ -147,8 +149,8 @@ export function measurementH(
   const rhoVecY = ry - groundStationPos[1];
   const rhoVecZ = rz - groundStationPos[2];
 
-  // ρ = ‖ρ_vec‖
-  const rho = Math.sqrt(rhoVecX ** 2 + rhoVecY ** 2 + rhoVecZ ** 2);
+  // ρ = ‖ρ_vec‖ (guarded against division by zero)
+  const rho = Math.max(1e-6, Math.sqrt(rhoVecX ** 2 + rhoVecY ** 2 + rhoVecZ ** 2));
 
   // Range: ρ
   const rhoVal = rho;
@@ -170,19 +172,21 @@ export function measurementH(
 // ---------------------------------------------------------------------------
 
 /**
- * Jacobian of the measurement model H(x, groundStationPos) → 2×6 matrix.
+ * Jacobian of the measurement model H(x, groundStationPos, groundStationVel) → 2×6 matrix.
  * Row 0: [uᵀ, 0₁×₃]   (derivative of range ρ w.r.t. state)
- * Row 1: [v_rel_x*u_x/ρ, v_rel_y*u_y/ρ, v_rel_z*u_z/ρ, u_x, u_y, u_z]
- *   (derivative of range-rate ρ̇ w.r.t. state)
+ * Row 1: [(v_rel − ṙ·u)ᵀ/ρ, uᵀ]
+ *   (derivative of range-rate ρ̇ w.r.t. state, with ṙ = (ρ_vec·v_rel)/ρ)
  *
  * x: state vector [rx, ry, rz, vx, vy, vz] (flat array, interpret as 6×1)
  * groundStationPos: [gx, gy, gz] ECI ground station position
- * v_rel = v − v_s (ground station velocity assumed zero per spec)
+ * groundStationVel: [gvx, gvy, gvz] ECI ground station velocity
+ *   (defaults to [0,0,0] for a static station); v_rel = v − v_s
  * Returns 2×6 matrix as { data: number[][], rows: 2, cols: 6 }.
  */
 export function measurementJacobianH(
   x: number[],
-  groundStationPos: number[]
+  groundStationPos: number[],
+  groundStationVel: number[] = [0, 0, 0]
 ): Matrix {
   const rx = x[0];
   const ry = x[1];
@@ -196,27 +200,30 @@ export function measurementJacobianH(
   const rhoVecY = ry - groundStationPos[1];
   const rhoVecZ = rz - groundStationPos[2];
 
-  // ρ = ‖ρ_vec‖
-  const rho = Math.sqrt(rhoVecX ** 2 + rhoVecY ** 2 + rhoVecZ ** 2);
+  // ρ = ‖ρ_vec‖ (guarded against division by zero)
+  const rho = Math.max(1e-6, Math.sqrt(rhoVecX ** 2 + rhoVecY ** 2 + rhoVecZ ** 2));
 
   // u = ρ_vec / ρ
   const ux = rhoVecX / rho;
   const uy = rhoVecY / rho;
   const uz = rhoVecZ / rho;
 
-  // v_rel = v − v_s (ground station velocity assumed zero per spec)
-  const vRelX = vx;
-  const vRelY = vy;
-  const vRelZ = vz;
+  // v_rel = v − v_s
+  const vRelX = vx - groundStationVel[0];
+  const vRelY = vy - groundStationVel[1];
+  const vRelZ = vz - groundStationVel[2];
+
+  // ṙ = (ρ_vec · v_rel) / ρ
+  const rr = (rhoVecX * vRelX + rhoVecY * vRelY + rhoVecZ * vRelZ) / rho;
 
   // Row 0: [uᵀ, 0₁×₃] = [ρ_vec_x/ρ, ρ_vec_y/ρ, ρ_vec_z/ρ, 0, 0, 0]
   const row0: number[] = [ux, uy, uz, 0, 0, 0];
 
-  // Row 1: [v_rel_x*u_x/ρ, v_rel_y*u_y/ρ, v_rel_z*u_z/ρ, u_x, u_y, u_z]
+  // Row 1: [(v_rel − ṙ·u)/ρ, u] — ∂ṙ/∂r = (v_rel − ṙ·u)/ρ, ∂ṙ/∂v = u
   const row1: number[] = [
-    vRelX * ux / rho,
-    vRelY * uy / rho,
-    vRelZ * uz / rho,
+    (vRelX - rr * ux) / rho,
+    (vRelY - rr * uy) / rho,
+    (vRelZ - rr * uz) / rho,
     ux,
     uy,
     uz,

@@ -62,6 +62,11 @@ function randn(): number {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
+/** Range-rate std (m/s) derived from range std (m). Single source of truth. */
+function rangeRateStd(r: number): number {
+  return Math.max(r * 0.01, 0.01);
+}
+
 function setStatus(points: number, time: number, state: string): void {
   const set = (id: string, txt: string) => {
     const el = document.getElementById(id);
@@ -88,8 +93,9 @@ function setStats(truthKm: [number, number], estKm: [number, number]): void {
 
 function buildQ6(q: number): (dt: number) => Matrix {
   return (dt: number): Matrix => {
-    const dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt2 * dt2;
-    const a = (dt4 / 4) * q, b = (dt3 / 2) * q, c = dt2 * q;
+    // Van Loan white-noise-on-acceleration: q is variance (sigma_a^2).
+    const dt2 = dt * dt, dt3 = dt2 * dt;
+    const a = (dt3 / 3) * q, b = (dt2 / 2) * q, c = dt * q;
     const d: number[][] = Array.from({ length: 6 }, () => new Array(6).fill(0));
     for (let i = 0; i < 3; i++) { d[i][i] = a; d[i][i + 3] = b; d[i + 3][i] = b; d[i + 3][i + 3] = c; }
     return { data: d, rows: 6, cols: 6 };
@@ -98,8 +104,9 @@ function buildQ6(q: number): (dt: number) => Matrix {
 
 function buildQ4(q: number): (dt: number) => Matrix {
   return (dt: number): Matrix => {
-    const dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt2 * dt2;
-    const a = (dt4 / 4) * q, b = (dt3 / 2) * q, c = dt2 * q;
+    // Van Loan white-noise-on-acceleration: q is variance (sigma_a^2).
+    const dt2 = dt * dt, dt3 = dt2 * dt;
+    const a = (dt3 / 3) * q, b = (dt2 / 2) * q, c = dt * q;
     const d: number[][] = Array.from({ length: 4 }, () => new Array(4).fill(0));
     for (let i = 0; i < 2; i++) { d[i][i] = a; d[i][i + 2] = b; d[i + 2][i] = b; d[i + 2][i + 2] = c; }
     return { data: d, rows: 4, cols: 4 };
@@ -113,7 +120,7 @@ function buildLeoEKF(data: LoadedData): void {
   const P0d: number[][] = Array.from({ length: 6 }, () => new Array(6).fill(0));
   for (let i = 0; i < 3; i++) P0d[i][i] = 1e8;      // (10 km)^2
   for (let i = 3; i < 6; i++) P0d[i][i] = 1e4;      // (100 m/s)^2
-  const rrStd = Math.max(rStd * 0.01, 0.01);
+  const rrStd = rangeRateStd(rStd);
   const [gsx, gsy, gsz] = GROUND_STATION;
 
   // Discrete two-body propagation; dt supplied via currentDt mutable
@@ -126,7 +133,7 @@ function buildLeoEKF(data: LoadedData): void {
     return mat(s, 6);
   };
   // Discrete transition with gravity gradient G = -mu/rho^3 (I - 3uu^T):
-  // Fd = [[I + G dt^2, I dt], [G dt, I]] (semi-implicit Euler)
+  // Fd = [[I + 0.5 G dt^2, I dt], [G dt, I]] (semi-implicit Euler)
   const F = (x: Matrix): Matrix => {
     const dt = currentDt;
     const rx = x.data[0][0], ry = x.data[1][0], rz = x.data[2][0];
@@ -142,7 +149,7 @@ function buildLeoEKF(data: LoadedData): void {
     const d: number[][] = Array.from({ length: 6 }, () => new Array(6).fill(0));
     for (let i = 0; i < 3; i++) {
       for (let j = 0; j < 3; j++) {
-        d[i][j] = (i === j ? 1 : 0) + G[i][j] * dt * dt;
+        d[i][j] = (i === j ? 1 : 0) + 0.5 * G[i][j] * dt * dt;
         d[i][j + 3] = i === j ? dt : 0;
         d[i + 3][j] = G[i][j] * dt;
         d[i + 3][j + 3] = i === j ? 1 : 0;
@@ -296,7 +303,7 @@ function stepFrame(): PlotData {
     let measKm: { x: number; y: number }[];
     if (scenario === 'leo') {
       // Ground-station range / range-rate from noisy truth position
-      const velStd = Math.max(rStd * 0.01, 0.01);
+      const velStd = rangeRateStd(rStd);
       const npx = p[0] + randn() * rStd, npy = p[1] + randn() * rStd, npz = p[2] + randn() * rStd;
       const nvx = v[0] + randn() * velStd, nvy = v[1] + randn() * velStd, nvz = v[2] + randn() * velStd;
       const dx = npx - GROUND_STATION[0], dy = npy - GROUND_STATION[1], dz = npz - GROUND_STATION[2];
@@ -380,7 +387,7 @@ initControls(
     if (ekf) {
       try {
         if (scenario === 'leo') {
-          const rrStd = Math.max(value * 0.02, 0.05);
+          const rrStd = rangeRateStd(value);
           ekf.setR({ data: [[value * value, 0], [0, rrStd * rrStd]], rows: 2, cols: 2 });
         } else {
           ekf.setR({ data: [[value * value, 0], [0, value * value]], rows: 2, cols: 2 });

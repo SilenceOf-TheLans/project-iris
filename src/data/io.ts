@@ -72,8 +72,7 @@ export interface SyntheticPassOptions {
 // ---------------------------------------------------------------------------
 
 /** Earth gravitational parameter μ = 3.986e14 m³/s² */
-const MU: number = 3.986e13; // 3.986 × 10^14, but we use 3.986e13 for km units carefully
-// Actually the docs say μ = 3.986e14 m³/s², r = 7000 km → use consistent units
+const MU: number = 3.986e14;
 
 /** Earth equatorial radius in km */
 const RE_KM: number = 6378.137;
@@ -110,18 +109,18 @@ function detectMode(header: string): CsvMode {
     throw new Error(`Invalid CSV header: expected 't' as first column, got '${first}'`);
   }
 
-  // Mode 1 has 10 fields: t,px,py,pz,vx,vy,vz,q0,q1,q2,q3
+  // Mode 1 has 11 fields: t,px,py,pz,vx,vy,vz,q0,q1,q2,q3
   // Mode 2 has 5 fields: t,px,py,vx,vy
   if (tokens.length === 11) {
     return 'mode1';
   }
-  if (tokens.length === 6) {
+  if (tokens.length === 5) {
     return 'mode2';
   }
 
   // Heuristic: check column names
   const second = tokens[1]?.toLowerCase().trim();
-  if (second && second.startsWith('p') && tokens.length === 6) {
+  if (second && second.startsWith('p') && tokens.length === 5) {
     return 'mode2';
   }
   if (second && second.startsWith('q') && tokens.length === 11) {
@@ -129,7 +128,7 @@ function detectMode(header: string): CsvMode {
   }
 
   throw new Error(
-    `Unrecognised CSV header (${tokens.length} columns). Expected Mode 1 (11 columns) or Mode 2 (6 columns).`
+    `Unrecognised CSV header (${tokens.length} columns). Expected Mode 1 (11 columns) or Mode 2 (5 columns).`
   );
 }
 
@@ -176,9 +175,9 @@ export function loadCSVText(text: string): LoadedData {
         `Mode 1 row ${i + 1}: expected 11 fields, got ${row.length}: ${lines[i]}`
       );
     }
-    if (mode === 'mode2' && row.length !== 6) {
+    if (mode === 'mode2' && row.length !== 5) {
       throw new Error(
-        `Mode 2 row ${i + 1}: expected 6 fields, got ${row.length}: ${lines[i]}`
+        `Mode 2 row ${i + 1}: expected 5 fields, got ${row.length}: ${lines[i]}`
       );
     }
 
@@ -204,6 +203,9 @@ export function loadCSVText(text: string): LoadedData {
 
       if (isNaN(px) || isNaN(py) || isNaN(pz) || isNaN(vx) || isNaN(vy) || isNaN(vz)) {
         throw new Error(`Row ${i + 1}: invalid numeric value in position/velocity fields`);
+      }
+      if (isNaN(q0) || isNaN(q1) || isNaN(q2) || isNaN(q3)) {
+        throw new Error(`Row ${i + 1}: invalid quaternion value in q0..q3 fields`);
       }
 
       positions.push([px, py, pz]);
