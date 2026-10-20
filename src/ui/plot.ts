@@ -3,6 +3,8 @@
  * Canvas-based 2D trajectory plot (X vs Y, km) with AMOLED aesthetic.
  * Navigation: wheel zoom (to cursor), drag pan, pinch zoom (touch),
  * double-click / keyboard 0 to reset, keyboard arrows/+/- to move/zoom.
+ * Layers: click legend icons (or keys 1-5) to toggle truth / estimate /
+ * drift / measurements / covariance ellipse.
  */
 
 export interface PlotOptions {
@@ -29,6 +31,10 @@ interface TraceEntry {
   age: number;
 }
 
+export type LayerId = 'truth' | 'estimate' | 'kf' | 'measurement' | 'ellipse';
+
+export type LayerVisibility = Record<LayerId, boolean>;
+
 interface PlotState {
   rafId: number | null;
   running: boolean;
@@ -40,6 +46,15 @@ interface PlotState {
   dataRangeY: [number, number];
   showGrid: boolean;
   showLegend: boolean;
+  layers: LayerVisibility;
+}
+
+interface LegendHitBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  layer: LayerId;
 }
 
 interface UserView {
@@ -80,7 +95,38 @@ let plotState: PlotState = {
   dataRangeY: DEFAULT_DATA_RANGE.slice() as [number, number],
   showGrid: true,
   showLegend: true,
+  layers: { truth: true, estimate: true, kf: true, measurement: true, ellipse: true },
 };
+
+/** Hit boxes for the clickable legend (CSS pixels, relative to canvas). Rebuilt on every drawLegend. */
+let legendHitBoxes: LegendHitBox[] = [];
+
+/** Layer visibility accessors for UI / tests. */
+export function getLayerVisibility(): LayerVisibility {
+  return { ...plotState.layers };
+}
+
+export function isLayerVisible(layer: LayerId): boolean {
+  return plotState.layers[layer];
+}
+
+export function setLayerVisible(layer: LayerId, visible: boolean): void {
+  plotState.layers[layer] = visible;
+  redrawPlot();
+}
+
+export function toggleLayer(layer: LayerId): boolean {
+  plotState.layers[layer] = !plotState.layers[layer];
+  redrawPlot();
+  return plotState.layers[layer];
+}
+
+export function setAllLayersVisible(visible: boolean): void {
+  (Object.keys(plotState.layers) as LayerId[]).forEach((k) => {
+    plotState.layers[k] = visible;
+  });
+  redrawPlot();
+}
 
 /** Explicit user-controlled view (zoom/pan). Null = auto-fit data ranges. */
 let userView: UserView | null = null;
@@ -331,6 +377,13 @@ function canvasPos(e: { clientX: number; clientY: number }, canvas: HTMLCanvasEl
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
+function hitLegend(px: number, py: number): LayerId | null {
+  for (const b of legendHitBoxes) {
+    if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) return b.layer;
+  }
+  return null;
+}
+
 function attachNavigation(canvas: HTMLCanvasElement): void {
   if ((canvas as any).__navWired) return;
   (canvas as any).__navWired = true;
@@ -342,28 +395,51 @@ function attachNavigation(canvas: HTMLCanvasElement): void {
     zoomAt(p.x, p.y, Math.exp(e.deltaY * unit * 0.0012));
   }, { passive: false });
 
-  canvas.addEventListener('dblclick', () => resetView());
+  canvas.addEventListener('dblclick', (e: MouseEvent) => {
+    // Double-click on legend should toggle, not reset view.
+    const p = canvasPos(e, canvas);
+    if (plotState.showLegend && hitLegend(p.x, p.y)) return;
+    resetView();
+  });
 
   const pointers = new Map<number, { x: number; y: number }>();
   let pinchDist = 0;
+  let downX = 0;
+  let downY = 0;
+  let downTime = 0;
+  let dragMoved = false;
 
   canvas.addEventListener('pointerdown', (e: PointerEvent) => {
     canvas.setPointerCapture?.(e.pointerId);
     const p = canvasPos(e, canvas);
     pointers.set(e.pointerId, p);
+    if (pointers.size === 1) {
+      downX = p.x;
+      downY = p.y;
+      downTime = performance.now();
+      dragMoved = false;
+    }
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+      dragMoved = true;
     }
     canvas.style.cursor = 'grabbing';
   });
 
   canvas.addEventListener('pointermove', (e: PointerEvent) => {
+    // Hover cursor when no button is pressed.
+    if (e.buttons === 0 && pointers.size === 0) {
+      const p = canvasPos(e, canvas);
+      canvas.style.cursor = plotState.showLegend && hitLegend(p.x, p.y) ? 'pointer' : 'grab';
+      return;
+    }
     const prev = pointers.get(e.pointerId);
     if (!prev) return;
     const p = canvasPos(e, canvas);
     pointers.set(e.pointerId, p);
     if (pointers.size === 1) {
+      if (Math.hypot(p.x - downX, p.y - downY) > 5) dragMoved = true;
       panByPixels(prev.x, prev.y, p.x, p.y);
     } else if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
@@ -377,15 +453,34 @@ function attachNavigation(canvas: HTMLCanvasElement): void {
   });
 
   const release = (e: PointerEvent) => {
+    const wasSingleTap =
+      pointers.size === 1 &&
+      !dragMoved &&
+      performance.now() - downTime < 500;
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinchDist = 0;
-    if (pointers.size === 0) canvas.style.cursor = 'grab';
+    if (pointers.size === 0) {
+      canvas.style.cursor = 'grab';
+      if (wasSingleTap) {
+        const p = canvasPos(e, canvas);
+        // Only treat small drifts as taps (pointer capture may shift coords slightly).
+        if (Math.hypot(p.x - downX, p.y - downY) <= 8 && plotState.showLegend) {
+          const layer = hitLegend(p.x, p.y);
+          if (layer) toggleLayer(layer);
+        }
+      }
+    }
   };
   canvas.addEventListener('pointerup', release);
   canvas.addEventListener('pointercancel', release);
 
   canvas.setAttribute('tabindex', '0');
   canvas.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === '1') { toggleLayer('truth'); e.preventDefault(); return; }
+    if (e.key === '2') { toggleLayer('estimate'); e.preventDefault(); return; }
+    if (e.key === '3') { toggleLayer('kf'); e.preventDefault(); return; }
+    if (e.key === '4') { toggleLayer('measurement'); e.preventDefault(); return; }
+    if (e.key === '5') { toggleLayer('ellipse'); e.preventDefault(); return; }
     const rect = plotState.graphRect;
     const cx = rect.x + rect.width / 2;
     const cy = rect.y + rect.height / 2;
@@ -421,7 +516,7 @@ function redrawPlot(): void {
   drawAxes(ctx, graphRect);
   drawTraces(ctx, graphRect);
   drawMeasurements(ctx, graphRect);
-  if (plotState.covarianceEllipse) drawCovarianceEllipse(ctx, graphRect, plotState.covarianceEllipse);
+  if (plotState.covarianceEllipse && plotState.layers.ellipse) drawCovarianceEllipse(ctx, graphRect, plotState.covarianceEllipse);
   if (plotState.showLegend) drawLegend(ctx, graphRect);
 }
 
@@ -606,12 +701,13 @@ function drawTraces(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
     }
     ctx.stroke();
   };
-  drawTrace(truth, COLORS.truth);
-  drawTrace(est, COLORS.ekf);
-  if (kf.length > 0) drawTrace(kf, COLORS.kf);
+  if (plotState.layers.truth) drawTrace(truth, COLORS.truth);
+  if (plotState.layers.estimate) drawTrace(est, COLORS.ekf);
+  if (plotState.layers.kf && kf.length > 0) drawTrace(kf, COLORS.kf);
 }
 
 function drawMeasurements(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
+  if (!plotState.layers.measurement) return;
   ctx.fillStyle = COLORS.measurement;
   for (const e of plotState.traceHistory) {
     if (e.type !== 'measurement') continue;
@@ -642,20 +738,74 @@ function drawCovarianceEllipse(ctx: CanvasRenderingContext2D, graphRect: GraphRe
 
 function drawLegend(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   const { x, y, width } = graphRect;
+  ctx.save();
   ctx.font = '11px monospace';
-  const entries = [
-    { color: COLORS.truth, label: 'Truth' },
-    { color: COLORS.ekf, label: 'EKF Est.' },
-    { color: COLORS.kf, label: 'Drift (no update)' },
-    { color: COLORS.measurement, label: 'Meas.' },
+  const entries: { layer: LayerId; color: string; label: string; kind: 'line' | 'dot' | 'ellipse' }[] = [
+    { layer: 'truth', color: COLORS.truth, label: 'Truth', kind: 'line' },
+    { layer: 'estimate', color: COLORS.ekf, label: 'EKF Est.', kind: 'line' },
+    { layer: 'kf', color: COLORS.kf, label: 'Drift (no update)', kind: 'line' },
+    { layer: 'measurement', color: COLORS.measurement, label: 'Meas.', kind: 'dot' },
+    { layer: 'ellipse', color: COLORS.ellipseStroke, label: 'Cov 2σ', kind: 'ellipse' },
   ];
-  let startY = y + 8;
   const boxX = x + width - 150;
+  const rowW = 142;
+  const rowH = 17;
+  legendHitBoxes = [];
+  // Header hint that legend is clickable.
+  ctx.fillStyle = COLORS.legendText;
+  ctx.globalAlpha = 0.6;
+  ctx.fillText('Layers (click)', boxX, y + 8);
+  ctx.globalAlpha = 1;
+  let startY = y + 14;
   for (const e of entries) {
-    ctx.fillStyle = e.color;
-    ctx.fillRect(boxX, startY, 12, 10);
+    const visible = plotState.layers[e.layer];
+    const rowY = startY;
+    legendHitBoxes.push({ x: boxX - 4, y: rowY - 2, w: rowW, h: rowH, layer: e.layer });
+    ctx.globalAlpha = visible ? 1 : 0.35;
+    if (e.kind === 'line') {
+      ctx.fillStyle = e.color;
+      if (visible) {
+        ctx.fillRect(boxX, rowY, 12, 10);
+      } else {
+        ctx.strokeStyle = e.color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(boxX + 0.5, rowY + 0.5, 11, 9);
+        // X across the swatch to signal hidden.
+        ctx.beginPath();
+        ctx.moveTo(boxX, rowY + 10);
+        ctx.lineTo(boxX + 12, rowY);
+        ctx.stroke();
+      }
+    } else if (e.kind === 'dot') {
+      ctx.fillStyle = e.color;
+      ctx.beginPath();
+      ctx.arc(boxX + 6, rowY + 5, 3, 0, Math.PI * 2);
+      if (visible) ctx.fill();
+      else ctx.stroke();
+    } else {
+      ctx.fillStyle = COLORS.ellipseFill;
+      ctx.strokeStyle = e.color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(boxX + 6, rowY + 5, 5, 0, Math.PI * 2);
+      if (visible) ctx.fill();
+      ctx.stroke();
+    }
     ctx.fillStyle = COLORS.legendText;
-    ctx.fillText(e.label, boxX + 16, startY + 9);
-    startY += 17;
+    ctx.fillText(e.label, boxX + 16, rowY + 9);
+    if (!visible) {
+      // Strikethrough for hidden layers.
+      const labelW = ctx.measureText(e.label).width;
+      const lineY = rowY + 5;
+      ctx.strokeStyle = COLORS.legendText;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(boxX + 16, lineY);
+      ctx.lineTo(boxX + 16 + labelW, lineY);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    startY += rowH;
   }
+  ctx.restore();
 }
