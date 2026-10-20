@@ -624,6 +624,43 @@ export function formatTick(v: number, decimals: number): string {
   return s;
 }
 
+/**
+ * Generate tick values that are multiples of `step` within [min, max].
+ * Like niceTicks but uses a prescribed step so both axes can share it.
+ */
+function ticksAtStep(min: number, max: number, step: number): number[] {
+  const ticks: number[] = [];
+  if (!isFinite(step) || step <= 0) return ticks;
+  let v = Math.ceil(min / step - 1e-9) * step;
+  for (let i = 0; i < 1000 && v <= max + step * 1e-9; i++) {
+    ticks.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+    v += step;
+  }
+  return ticks;
+}
+
+/**
+ * Single nice tick step suitable for both X and Y axes. Using the same step
+ * on both axes guarantees matching numeric labels (multiples of step) where
+ * the ranges overlap, instead of each axis picking its own step and one
+ * showing 5000 while the other only shows 4000 and 6000.
+ * Picks the coarser of the two per-axis nice steps so neither axis exceeds
+ * its target tick count.
+ */
+function commonTickStep(
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+  targetX: number,
+  targetY: number,
+): number {
+  const sx = niceTicks(x0, x1, targetX).step;
+  const sy = niceTicks(y0, y1, targetY).step;
+  if (!sx || !sy) return sx || sy || 1;
+  return Math.max(sx, sy);
+}
+
 function drawGrid(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   const r = effRanges();
   const [x0, x1] = spanGuarded(r.x0, r.x1);
@@ -634,9 +671,13 @@ function drawGrid(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   ctx.lineWidth = 1;
   ctx.strokeRect(x, y, width, height);
 
-  // Gridlines at data-space ticks so they move with zoom/pan.
-  const { ticks: xTicks } = niceTicks(x0, x1, Math.max(3, Math.floor(width / 110)));
-  const { ticks: yTicks } = niceTicks(y0, y1, Math.max(3, Math.floor(height / 70)));
+  // Matching labels on both axes: one common nice step, so X and Y show the
+  // same numeric multiples (where their ranges overlap).
+  const xTarget = Math.max(3, Math.floor(width / 110));
+  const yTarget = Math.max(3, Math.floor(height / 70));
+  const step = commonTickStep(x0, x1, y0, y1, xTarget, yTarget);
+  const xTicks = ticksAtStep(x0, x1, step);
+  const yTicks = ticksAtStep(y0, y1, step);
   ctx.beginPath();
   for (const t of xTicks) {
     const gx = dataXToPixel(t, graphRect);
@@ -684,22 +725,22 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   // Tick labels in the margins (always shown, even if grid is off).
   const xTarget = Math.max(3, Math.floor(width / 110));
   const yTarget = Math.max(3, Math.floor(height / 70));
-  const { ticks: xTicks, step: xStep } = niceTicks(x0, x1, xTarget);
-  const { ticks: yTicks, step: yStep } = niceTicks(y0, y1, yTarget);
-  const xDec = tickDecimals(xStep);
-  const yDec = tickDecimals(yStep);
+  const step = commonTickStep(x0, x1, y0, y1, xTarget, yTarget);
+  const xTicks = ticksAtStep(x0, x1, step);
+  const yTicks = ticksAtStep(y0, y1, step);
+  const dec = tickDecimals(step);
   ctx.font = '10px monospace';
   for (const t of xTicks) {
-    ctx.fillText(formatTick(t, xDec), dataXToPixel(t, graphRect), y + height + 5);
+    ctx.fillText(formatTick(t, dec), dataXToPixel(t, graphRect), y + height + 5);
   }
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   for (const t of yTicks) {
-    ctx.fillText(formatTick(t, yDec), x - 6, dataYToPixel(t, graphRect));
+    ctx.fillText(formatTick(t, dec), x - 6, dataYToPixel(t, graphRect));
   }
   let maxLabelW = 0;
   for (const t of yTicks) {
-    maxLabelW = Math.max(maxLabelW, ctx.measureText(formatTick(t, yDec)).width);
+    maxLabelW = Math.max(maxLabelW, ctx.measureText(formatTick(t, dec)).width);
   }
   const titleX = Math.max(10, x - 10 - maxLabelW - 12);
   ctx.font = '11px monospace';
