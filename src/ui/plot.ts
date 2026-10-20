@@ -163,6 +163,10 @@ function sizeCanvasToDisplay(canvas: HTMLCanvasElement, fallbackW: number, fallb
   const ctx = canvas.getContext('2d');
   if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+  // Graph box stays a rectangle that fills the canvas proportions. 1:1 data
+  // scaling is enforced in effRanges() by expanding one axis's range so the
+  // data aspect matches the box aspect — pixels-per-km are then identical on
+  // both axes without shrinking the box.
   const graphWidth = cssW * GRAPH_WIDTH_PERCENT;
   const graphHeight = cssH * GRAPH_HEIGHT_PERCENT;
   const marginX = (cssW - graphWidth) / 2;
@@ -299,19 +303,43 @@ export function isAnimationRunning(): boolean {
 type GraphRect = { x: number; y: number; width: number; height: number };
 
 function effRanges(): { x0: number; x1: number; y0: number; y1: number } {
+  const graphRect = plotState.graphRect;
+  // Plotting area inside the box (excludes the PAD margin on each side). Same
+  // (1 - 2*PAD) factor on both axes, so plotAreaW/plotAreaH == box width/height.
+  const plotAreaW = Math.max(1, graphRect.width * (1 - 2 * PAD));
+  const plotAreaH = Math.max(1, graphRect.height * (1 - 2 * PAD));
+  const boxAspect = plotAreaW / plotAreaH;
+
   if (userView) {
+    const v = userView;
+    // Keep 1:1: spanY is derived from spanX so pixels-per-km match on both axes.
+    const spanX = Math.max(MIN_SPAN, v.spanX);
+    const spanY = spanX / boxAspect;
     return {
-      x0: userView.cx - userView.spanX / 2,
-      x1: userView.cx + userView.spanX / 2,
-      y0: userView.cy - userView.spanY / 2,
-      y1: userView.cy + userView.spanY / 2,
+      x0: v.cx - spanX / 2,
+      x1: v.cx + spanX / 2,
+      y0: v.cy - spanY / 2,
+      y1: v.cy + spanY / 2,
     };
   }
+
+  // Auto-fit: largest uniform scale that contains all the data while filling
+  // the rectangular box. One axis exactly spans the data; the other gets
+  // headroom so the box stays rectangular and pixels-per-km stay equal.
+  const spanX = plotState.dataRangeX[1] - plotState.dataRangeX[0];
+  const spanY = plotState.dataRangeY[1] - plotState.dataRangeY[0];
+  const cx = (plotState.dataRangeX[0] + plotState.dataRangeX[1]) / 2;
+  const cy = (plotState.dataRangeY[0] + plotState.dataRangeY[1]) / 2;
+  const safeX = Math.max(1e-9, spanX);
+  const safeY = Math.max(1e-9, spanY);
+  const scale = Math.min(plotAreaW / safeX, plotAreaH / safeY);
+  const shownSpanX = plotAreaW / scale;
+  const shownSpanY = plotAreaH / scale;
   return {
-    x0: plotState.dataRangeX[0],
-    x1: plotState.dataRangeX[1],
-    y0: plotState.dataRangeY[0],
-    y1: plotState.dataRangeY[1],
+    x0: cx - shownSpanX / 2,
+    x1: cx + shownSpanX / 2,
+    y0: cy - shownSpanY / 2,
+    y1: cy + shownSpanY / 2,
   };
 }
 
@@ -506,6 +534,14 @@ function redrawPlot(): void {
   if (!ctx) return;
   const cssW = canvas.clientWidth || 800;
   const cssH = canvas.clientHeight || 560;
+  // Keep the graph box a rectangle filling the canvas; 1:1 scaling is enforced
+  // by effRanges() every frame (loop engineering).
+  plotState.graphRect = {
+    x: (cssW - cssW * GRAPH_WIDTH_PERCENT) / 2,
+    y: (cssH - cssH * GRAPH_HEIGHT_PERCENT) / 2,
+    width: cssW * GRAPH_WIDTH_PERCENT,
+    height: cssH * GRAPH_HEIGHT_PERCENT,
+  };
   const graphRect = plotState.graphRect;
   if (graphRect.width <= 0 || graphRect.height <= 0) return;
 
