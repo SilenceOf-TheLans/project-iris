@@ -550,9 +550,24 @@ function redrawPlot(): void {
 
   if (plotState.showGrid) drawGrid(ctx, graphRect);
   drawAxes(ctx, graphRect);
+
+  // Clip data layers to the inner plotting area so traces / measurements /
+  // covariance never spill outside the graph's data limits (e.g. into the
+  // legend or off-canvas when points fall outside the current view range).
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(
+    graphRect.x + graphRect.width * PAD,
+    graphRect.y + graphRect.height * PAD,
+    graphRect.width * (1 - 2 * PAD),
+    graphRect.height * (1 - 2 * PAD),
+  );
+  ctx.clip();
   drawTraces(ctx, graphRect);
   drawMeasurements(ctx, graphRect);
   if (plotState.covarianceEllipse && plotState.layers.ellipse) drawCovarianceEllipse(ctx, graphRect, plotState.covarianceEllipse);
+  ctx.restore();
+
   if (plotState.showLegend) drawLegend(ctx, graphRect);
 }
 
