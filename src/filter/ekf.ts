@@ -138,75 +138,6 @@ function scalarMultiply(c: number, A: Matrix): Matrix {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: inverse of a square matrix using Gaussian elimination
-// Returns inverse or throws if singular.
-// ---------------------------------------------------------------------------
-
-function invert(A: Matrix): Matrix {
-  const n = A.rows;
-  if (n !== A.cols) {
-    throw new Error("Inverse requires a square matrix");
-  }
-
-  // Augment [A | I]
-  const aug: number[][] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    aug[i] = new Array(2 * n);
-    for (let j = 0; j < n; j++) {
-      aug[i][j] = A.data[i][j];
-    }
-    for (let j = n; j < 2 * n; j++) {
-      aug[i][j] = i === j - n ? 1 : 0;
-    }
-  }
-
-  // Forward elimination with partial pivoting
-  for (let col = 0; col < n; col++) {
-    // Find pivot
-    let maxRow = col;
-    for (let row = col + 1; row < n; row++) {
-      if (Math.abs(aug[row][col]) > Math.abs(aug[maxRow][col])) {
-        maxRow = row;
-      }
-    }
-
-    // Swap rows
-    [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
-
-    const pivot = aug[col][col];
-    if (Math.abs(pivot) < 1e-12) {
-      throw new Error("Matrix is singular (near-zero pivot)");
-    }
-
-    // Scale pivot row
-    for (let j = 0; j < 2 * n; j++) {
-      aug[col][j] /= pivot;
-    }
-
-    // Eliminate all other rows
-    for (let row = 0; row < n; row++) {
-      if (row !== col) {
-        const factor = aug[row][col];
-        for (let j = 0; j < 2 * n; j++) {
-          aug[row][j] -= factor * aug[col][j];
-        }
-      }
-    }
-  }
-
-  // Extract right half (the inverse)
-  const result: number[][] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    result[i] = new Array(n);
-    for (let j = 0; j < n; j++) {
-      result[i][j] = aug[i][n + j];
-    }
-  }
-
-  return { data: result, rows: n, cols: n };
-}
-
-// ---------------------------------------------------------------------------
 // EKF class
 // ---------------------------------------------------------------------------
 
@@ -280,30 +211,55 @@ export class EKF {
 
   /** update(z) – incorporate a measurement vector z */
   update(z: Matrix): void {
-    // y = z - h(x̂⁻)  (innovation / residual)
-    const h_xBar = this.h(this.xHat);
-    const y = subtract(z, h_xBar);
+    // Process the measurement components sequentially as scalar updates.
+    //
+    // Inverting the full innovation covariance S becomes numerically unstable
+    // when two measurements are nearly collinear in the current prior (e.g.
+    // range and range-rate from one ground station over a short arc, where
+    // corr(range, range-rate) can approach 1). A near-singular S produces a
+    // huge, essentially arbitrary gain. Sequential scalar updates are
+    // algebraically equivalent for independent measurement noise but never
+    // require inverting a near-singular matrix.
+    const Rfull = typeof this.R === "function" ? this.R(this.xHat) : this.R;
 
-    // S = H · P⁻ · Hᵀ + R  (innovation covariance)
-    const H = this.H(this.xHat);
-    const Ht = transpose(H);
-    const H_P_Ht = multiply(multiply(H, this.P), Ht);
-    const S = add(H_P_Ht, typeof this.R === "function" ? this.R(this.xHat) : this.R);
+    for (let i = 0; i < z.rows; i++) {
+      const Rii = Rfull.data[i][i];
+      if (!isFinite(Rii) || Rii < 0) {
+        throw new Error(`Invalid measurement variance at index ${i}: ${Rii}`);
+      }
 
-    // K = P⁻ · Hᵀ · S⁻¹  (Kalman gain)
-    const Pt_Ht = multiply(this.P, Ht);
-    const Sinv = invert(S);
-    const K = multiply(Pt_Ht, Sinv);
+      // Re-evaluate the nonlinear measurement model after each scalar update.
+      const hAll = this.h(this.xHat);
+      const HAll = this.H(this.xHat);
+      const yi = z.data[i][0] - hAll.data[i][0];
 
-    // x̂ = x̂⁻ + K · y  (state update)
-    const K_y = multiply(K, y);
-    this.xHat = add(this.xHat, K_y);
+      const Hi: Matrix = { data: [HAll.data[i].slice()], rows: 1, cols: HAll.cols };
+      const Ht = transpose(Hi);
+      const PHt = multiply(this.P, Ht); // n×1
+      const S = multiply(Hi, PHt).data[0][0] + Rii; // scalar innovation variance
 
-    // P = (I - K · H) · P⁻  (covariance update)
-    const K_H = multiply(K, H);
-    const I_n = identity(this.xHat.rows);
-    const I_minus_KH = subtract(I_n, K_H);
-    this.P = multiply(I_minus_KH, this.P);
+      if (!isFinite(S) || S <= 0) {
+        throw new Error(`Invalid innovation variance at index ${i}: ${S}`);
+      }
+
+      // K = P Hᵀ / S  (n×1)
+      const K = scalarMultiply(1 / S, PHt);
+      this.xHat = add(this.xHat, scalarMultiply(yi, K));
+
+      // Joseph-form covariance update for this scalar measurement:
+      //   P = (I - K H) P (I - K H)ᵀ + K R Kᵀ
+      const K_H = multiply(K, Hi);
+      const I_n = identity(this.xHat.rows);
+      const I_minus_KH = subtract(I_n, K_H);
+      const A = multiply(multiply(I_minus_KH, this.P), transpose(I_minus_KH));
+      const B = scalarMultiply(Rii, multiply(K, transpose(K)));
+      const P_joseph = add(A, B);
+
+      const P_sym: number[][] = P_joseph.data.map((row, r) =>
+        row.map((val, c) => 0.5 * (val + P_joseph.data[c][r]))
+      );
+      this.P = { data: P_sym, rows: P_joseph.rows, cols: P_joseph.cols };
+    }
   }
 
   /** get state() – current state estimate x̂ */

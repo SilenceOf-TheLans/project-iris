@@ -18,10 +18,10 @@ export interface PlotOptions {
 export interface PlotData {
   time: number;
   truth: number[];
-  estimate: number[];
-  kf: number[];
+  estimate?: number[];
+  kf?: number[];
   measurements: { x: number; y: number }[];
-  covarianceEllipse: [number, number, number];
+  covarianceEllipse?: [number, number, number];
 }
 
 interface TraceEntry {
@@ -245,7 +245,7 @@ function updateDataRanges(data: PlotData): void {
   };
 
   if (data.truth?.length >= 2) consider(data.truth[0], data.truth[1]);
-  if (data.estimate?.length >= 2) consider(data.estimate[0], data.estimate[1]);
+  if (data.estimate && data.estimate.length >= 2) consider(data.estimate[0], data.estimate[1]);
   // KF baseline excluded: it may drift far and would blow up auto-fit
   if (data.measurements) for (const m of data.measurements) consider(m.x, m.y);
 
@@ -773,10 +773,11 @@ function drawTraces(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
     else if (e.type === 'estimate') est.push(e);
     else if (e.type === 'kf') kf.push(e);
   }
-  const drawTrace = (entries: TraceEntry[], color: string): void => {
+  const drawTrace = (entries: TraceEntry[], color: string, width: number, dash: number[] = []): void => {
     if (entries.length === 0) return;
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash);
     ctx.beginPath();
     let first = true;
     for (const e of entries) {
@@ -787,10 +788,13 @@ function drawTraces(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
       else ctx.lineTo(px, py);
     }
     ctx.stroke();
+    ctx.setLineDash([]);
   };
-  if (plotState.layers.truth) drawTrace(truth, COLORS.truth);
-  if (plotState.layers.estimate) drawTrace(est, COLORS.ekf);
-  if (plotState.layers.kf && kf.length > 0) drawTrace(kf, COLORS.kf);
+  // Draw the no-update drift baseline first (and dashed) so it never hides the
+  // truth/estimate traces when the three curves overlap.
+  if (plotState.layers.kf && kf.length > 0) drawTrace(kf, COLORS.kf, 1.2, [6, 4]);
+  if (plotState.layers.truth) drawTrace(truth, COLORS.truth, 2.4);
+  if (plotState.layers.estimate) drawTrace(est, COLORS.ekf, 1.7);
 }
 
 function drawMeasurements(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
@@ -802,7 +806,7 @@ function drawMeasurements(ctx: CanvasRenderingContext2D, graphRect: GraphRect): 
     const py = dataYToPixel(e.y, graphRect);
     if (!isFinite(px) || !isFinite(py)) continue;
     ctx.beginPath();
-    ctx.arc(px, py, 2, 0, Math.PI * 2);
+    ctx.arc(px, py, 3, 0, Math.PI * 2);
     ctx.fill();
   }
 }

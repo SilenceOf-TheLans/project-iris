@@ -67,7 +67,8 @@
         <h3>Project IRIS — EKF Simulator</h3>
         <p>Extended Kalman Filter simulator for aerospace exam prep.</p>
         <p>Load a CSV file or use the synthetic LEO pass. Press Run EKF.</p>
-        <p>LEO: 6-state orbit, range + range-rate updates. Attitude: 4-state 2D position tracking.</p>
+        <p>LEO: 6-state orbit, range + range-rate updates. Attitude: 4-state 2D orbit, direct position updates.</p>
+        <p>CSV rows are sparse measurements. The clean truth curve is regenerated from the two-body orbit equation over the same time span, so it stays smooth even with only 5 points.</p>
       </div>
 
       <div id="about-panel" class="help-panel">
