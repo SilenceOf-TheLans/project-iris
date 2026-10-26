@@ -15,13 +15,15 @@ export interface PlotOptions {
   showLegend?: boolean;
 }
 
+export type CovarianceEllipse = [cx: number, cy: number, majorKm: number, minorKm: number, angleRad: number];
+
 export interface PlotData {
   time: number;
   truth: number[];
   estimate?: number[];
   kf?: number[];
   measurements: { x: number; y: number }[];
-  covarianceEllipse?: [number, number, number];
+  covarianceEllipse?: CovarianceEllipse;
 }
 
 interface TraceEntry {
@@ -40,7 +42,7 @@ interface PlotState {
   running: boolean;
   lastTime: number;
   traceHistory: TraceEntry[];
-  covarianceEllipse: [number, number, number] | null;
+  covarianceEllipse: CovarianceEllipse | null;
   graphRect: { x: number; y: number; width: number; height: number };
   dataRangeX: [number, number];
   dataRangeY: [number, number];
@@ -273,14 +275,18 @@ export function startAnimation(currentDataCallback?: () => PlotData): void {
         estimate: [0, 0],
         kf: [0, 0],
         measurements: [],
-        covarianceEllipse: [0, 0, 0],
       };
       const data = currentDataCallback ? currentDataCallback() : defaultData;
       updatePlot(data);
     } catch (err) {
       console.error('Plot animation step failed:', err);
     }
-    plotState.rafId = requestAnimationFrame(animationStep);
+    // The callback may have paused or finished the run. Do not schedule a
+    // second RAF chain from an already-finished frame: a later Run would then
+    // have two loops mutating the filter state.
+    if (plotState.running) {
+      plotState.rafId = requestAnimationFrame(animationStep);
+    }
   };
 
   plotState.rafId = requestAnimationFrame(animationStep);
@@ -811,18 +817,30 @@ function drawMeasurements(ctx: CanvasRenderingContext2D, graphRect: GraphRect): 
   }
 }
 
-function drawCovarianceEllipse(ctx: CanvasRenderingContext2D, graphRect: GraphRect, ellipse: [number, number, number]): void {
-  const [cx, cy, r] = ellipse;
-  if (!isFinite(cx) || !isFinite(cy) || !isFinite(r) || r <= 0) return;
+function drawCovarianceEllipse(ctx: CanvasRenderingContext2D, graphRect: GraphRect, ellipse: CovarianceEllipse): void {
+  const [cx, cy, majorKm, minorKm, angle] = ellipse;
+  if (![cx, cy, majorKm, minorKm, angle].every(Number.isFinite)) return;
+  if (majorKm <= 0 || minorKm < 0) return;
+
   const px = dataXToPixel(cx, graphRect);
   const py = dataYToPixel(cy, graphRect);
   const scaleX = dataToPixelScaleX(graphRect);
-  const rPx = Math.max(2, Math.min(120, r * scaleX));
+  const rawMajor = majorKm * scaleX;
+  const rawMinor = minorKm * scaleX;
+  if (!(rawMajor > 0) || !Number.isFinite(rawMajor) || !Number.isFinite(rawMinor)) return;
+
+  // Keep the 2σ ellipse visible but bounded. One uniform display scale keeps
+  // its aspect ratio and orientation intact.
+  const displayScale = Math.min(120 / rawMajor, Math.max(1, 2 / rawMajor));
+  const majorPx = rawMajor * displayScale;
+  const minorPx = Math.max(1, rawMinor * displayScale);
+
   ctx.fillStyle = COLORS.ellipseFill;
   ctx.strokeStyle = COLORS.ellipseStroke;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.arc(px, py, rPx, 0, Math.PI * 2);
+  // Canvas Y grows downward, so negate the data-space rotation.
+  ctx.ellipse(px, py, majorPx, minorPx, -angle, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
 }

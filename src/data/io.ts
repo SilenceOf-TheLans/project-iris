@@ -53,6 +53,8 @@ export interface LoadedData {
   truthPosition: number[][];
   truthVelocity: number[][];
   quaternion?: number[][];
+  /** CSV mode that produced these measurements (undefined for the built-in pass). */
+  mode?: CsvMode;
 }
 
 /**
@@ -97,8 +99,11 @@ const MU: number = 3.986e14;
 /** Earth equatorial radius in km */
 const RE_KM: number = 6378.137;
 
-/** Standard gravitational parameter in km³/s² */
-const MU_KM3: number = 3.986e5; // 3.986e14 m³/s² = 3.986e5 km³/s²
+/** Canonical CSV headers. Column count alone is not enough: a file with the
+ *  right number of columns but swapped/renamed fields would otherwise be
+ *  silently interpreted as metres, seconds, or quaternions. */
+const MODE1_HEADER = ['t', 'px', 'py', 'pz', 'vx', 'vy', 'vz', 'q0', 'q1', 'q2', 'q3'] as const;
+const MODE2_HEADER = ['t', 'px', 'py', 'vx', 'vy'] as const;
 
 // ---------------------------------------------------------------------------
 // Helper: parse a single CSV line into fields
@@ -111,6 +116,22 @@ const MU_KM3: number = 3.986e5; // 3.986e14 m³/s² = 3.986e5 km³/s²
  */
 function parseCSVLine(line: string): string[] {
   return line.split(',').map((field) => field.trim());
+}
+
+/**
+ * Parse a required numeric field strictly. Number('') is 0 and parseFloat
+ * accepts trailing garbage, so both would turn malformed input into plausible
+ * but wrong numbers. Reject empty and non-finite fields explicitly.
+ */
+function parseNumericField(field: string, rowNumber: number, columnName: string): number {
+  if (field.trim() === '') {
+    throw new Error(`Row ${rowNumber}: empty ${columnName} value`);
+  }
+  const value = Number(field);
+  if (!Number.isFinite(value)) {
+    throw new Error(`Row ${rowNumber}: invalid ${columnName} value '${field}'`);
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +169,23 @@ function propagateTwoBodyTruth(
   durationS: number,
   numSteps: number
 ): { time: number[]; position: number[][]; velocity: number[][] } {
-  const dt = numSteps > 1 ? durationS / (numSteps - 1) : 0;
+  if (!Number.isFinite(durationS) || durationS < 0) {
+    throw new Error(`Invalid truth duration: ${durationS} s`);
+  }
+  const count = Math.floor(numSteps);
+  if (!Number.isFinite(count) || count < 2) {
+    throw new Error(`Invalid truth point count: ${numSteps}`);
+  }
+  if (count > 20000) {
+    throw new Error(`Truth point count is too large: ${numSteps}`);
+  }
+
+  const dt = durationS / (count - 1);
+  const nSub = Math.max(1, Math.ceil(dt / 5));
+  if (nSub * (count - 1) > 2_000_000) {
+    throw new Error(`Requested time span is too large to integrate: ${durationS} s`);
+  }
+  const h = dt / nSub;
 
   const times: number[] = [];
   const positions: number[][] = [];
@@ -156,17 +193,15 @@ function propagateTwoBodyTruth(
 
   let s = [...r0, ...v0];
 
-  for (let i = 0; i < numSteps; i++) {
+  for (let i = 0; i < count; i++) {
     times.push(i * dt);
     positions.push([s[0], s[1], s[2]]);
     velocities.push([s[3], s[4], s[5]]);
 
-    if (i === numSteps - 1) break;
+    if (i === count - 1) break;
 
     // RK4 is stable for much larger steps; 5 s keeps the integration error
     // far below the measurement noise even over many orbital periods.
-    const nSub = Math.max(1, Math.ceil(dt / 5));
-    const h = dt / nSub;
     for (let k = 0; k < nSub; k++) s = rk4Step(s, h);
   }
 
@@ -248,33 +283,16 @@ export function interpolateTruth(
  * Returns 'mode1' or 'mode2', or throws if the header is unrecognised.
  */
 function detectMode(header: string): CsvMode {
-  const tokens = parseCSVLine(header);
-  const first = tokens[0].toLowerCase().trim();
+  const tokens = parseCSVLine(header).map((token) => token.toLowerCase());
+  const matches = (expected: readonly string[]): boolean =>
+    tokens.length === expected.length && tokens.every((token, i) => token === expected[i]);
 
-  if (first !== 't') {
-    throw new Error(`Invalid CSV header: expected 't' as first column, got '${first}'`);
-  }
-
-  // Mode 1 has 11 fields: t,px,py,pz,vx,vy,vz,q0,q1,q2,q3
-  // Mode 2 has 5 fields: t,px,py,vx,vy
-  if (tokens.length === 11) {
-    return 'mode1';
-  }
-  if (tokens.length === 5) {
-    return 'mode2';
-  }
-
-  // Heuristic: check column names
-  const second = tokens[1]?.toLowerCase().trim();
-  if (second && second.startsWith('p') && tokens.length === 5) {
-    return 'mode2';
-  }
-  if (second && second.startsWith('q') && tokens.length === 11) {
-    return 'mode1';
-  }
+  if (matches(MODE1_HEADER)) return 'mode1';
+  if (matches(MODE2_HEADER)) return 'mode2';
 
   throw new Error(
-    `Unrecognised CSV header (${tokens.length} columns). Expected Mode 1 (11 columns) or Mode 2 (5 columns).`
+    `Unrecognised CSV header. Expected '${MODE1_HEADER.join(',')}' (Mode 1) ` +
+    `or '${MODE2_HEADER.join(',')}' (Mode 2).`
   );
 }
 
@@ -319,58 +337,38 @@ export function loadCSVText(text: string): LoadedData {
       continue;
     }
 
+    const expected = mode === 'mode1' ? MODE1_HEADER : MODE2_HEADER;
+
     // Validate column count
-    if (mode === 'mode1' && row.length !== 11) {
+    if (row.length !== expected.length) {
       throw new Error(
-        `Mode 1 row ${i + 1}: expected 11 fields, got ${row.length}: ${lines[i]}`
-      );
-    }
-    if (mode === 'mode2' && row.length !== 5) {
-      throw new Error(
-        `Mode 2 row ${i + 1}: expected 5 fields, got ${row.length}: ${lines[i]}`
+        `Mode ${mode === 'mode1' ? 1 : 2} row ${i + 1}: expected ${expected.length} fields, got ${row.length}: ${lines[i]}`
       );
     }
 
-    const t = parseFloat(row[0]);
-    if (isNaN(t)) {
-      throw new Error(`Row ${i + 1}: invalid time value '${row[0]}'`);
-    }
+    // Parse every field strictly (empty and non-finite values are rejected).
+    const values = row.map((field, col) =>
+      parseNumericField(field, i + 1, expected[col])
+    );
+    const t = values[0];
 
+    if (measTimes.length > 0 && t <= measTimes[measTimes.length - 1]) {
+      throw new Error(
+        `Row ${i + 1}: time stamps must be strictly increasing ` +
+        `(${t} <= ${measTimes[measTimes.length - 1]})`
+      );
+    }
     measTimes.push(t);
 
     if (mode === 'mode1') {
       // Mode 1: t,px,py,pz,vx,vy,vz,q0,q1,q2,q3
-      const px = parseFloat(row[1]);
-      const py = parseFloat(row[2]);
-      const pz = parseFloat(row[3]);
-      const vx = parseFloat(row[4]);
-      const vy = parseFloat(row[5]);
-      const vz = parseFloat(row[6]);
-      const q0 = parseFloat(row[7]);
-      const q1 = parseFloat(row[8]);
-      const q2 = parseFloat(row[9]);
-      const q3 = parseFloat(row[10]);
-
-      if (isNaN(px) || isNaN(py) || isNaN(pz) || isNaN(vx) || isNaN(vy) || isNaN(vz)) {
-        throw new Error(`Row ${i + 1}: invalid numeric value in position/velocity fields`);
-      }
-      if (isNaN(q0) || isNaN(q1) || isNaN(q2) || isNaN(q3)) {
-        throw new Error(`Row ${i + 1}: invalid quaternion value in q0..q3 fields`);
-      }
-
+      const [, px, py, pz, vx, vy, vz, q0, q1, q2, q3] = values;
       measPositions.push([px, py, pz]);
       measVelocities.push([vx, vy, vz]);
       quaternions!.push([q0, q1, q2, q3]);
     } else {
       // Mode 2: t,px,py,vx,vy
-      const px = parseFloat(row[1]);
-      const py = parseFloat(row[2]);
-      const vx = parseFloat(row[3]);
-      const vy = parseFloat(row[4]);
-
-      if (isNaN(px) || isNaN(py) || isNaN(vx) || isNaN(vy)) {
-        throw new Error(`Row ${i + 1}: invalid numeric value in position/velocity fields`);
-      }
+      const [, px, py, vx, vy] = values;
 
       // Mode 2 has 2D position; store as 3D with z = 0
       measPositions.push([px, py, 0]);
@@ -378,17 +376,8 @@ export function loadCSVText(text: string): LoadedData {
     }
   }
 
-  // If no data rows were parsed but we have a header, return empty structures
   if (measTimes.length === 0) {
-    return {
-      time: [],
-      position: [],
-      velocity: [],
-      truthTime: [],
-      truthPosition: [],
-      truthVelocity: [],
-      quaternion: undefined,
-    };
+    throw new Error('CSV contains a header but no data rows');
   }
 
   // ---- Generate high-resolution equation-based truth ----
@@ -396,7 +385,13 @@ export function loadCSVText(text: string): LoadedData {
   // over the full duration. This gives a smooth orbital curve independent
   // of how sparse the measurements are.
   const durationS = measTimes[measTimes.length - 1] - measTimes[0];
-  const numTruthPoints = Math.max(measTimes.length * 10, 360);
+  // Keep at most ~20 s between truth samples. The previous fixed 360-point
+  // grid under-resolved multi-orbit or high-altitude files, which made the
+  // Hermite interpolation and the drawn curve unnecessarily coarse.
+  const numTruthPoints = Math.min(
+    20000,
+    Math.max(measTimes.length * 10, 360, Math.ceil(durationS / 20) + 1)
+  );
   const truth = propagateTwoBodyTruth(
     measPositions[0],
     measVelocities[0],
@@ -413,6 +408,7 @@ export function loadCSVText(text: string): LoadedData {
     truthPosition: truth.position,
     truthVelocity: truth.velocity,
     quaternion: quaternions,
+    mode,
   };
 }
 
@@ -465,29 +461,52 @@ export async function loadCSVFile(file: File): Promise<LoadedData> {
 export function generateSyntheticPass(
   options?: SyntheticPassOptions
 ): GeneratedPass {
-  const opts = {
-    altitude: 300, // km default
-    duration: 600, // s default
-    points: 80, // default sparse measurement points
-    truthPoints: undefined, // computed below
-    noiseStd: 0, // m default — no measurement noise on truth
-    noiseVelStd: 0, // m/s default — no measurement noise on truth velocity
-    ...options,
-  };
+  const altitude = options?.altitude ?? 300; // km
+  const duration = options?.duration ?? 600; // s
+  const requestedPoints = options?.points ?? 80; // sparse measurements
+  const noiseStd = options?.noiseStd ?? 0; // m
+  const noiseVelStd = options?.noiseVelStd ?? 0; // m/s
 
-  const altitude: number = opts.altitude;
-  const duration: number = opts.duration;
-  const numPoints: number = Math.max(1, Math.min(opts.points, 5000));
-  const numTruthPoints: number = opts.truthPoints ?? Math.max(numPoints * 10, 360);
-  const noiseStd: number = opts.noiseStd ?? 0;
-  const noiseVelStd: number = opts.noiseVelStd ?? 0;
-
-  // Validate
-  if (duration <= 0) {
+  // Validate before clamping: silently turning NaN or a negative count into a
+  // valid-looking orbit hides caller mistakes.
+  if (!Number.isFinite(altitude)) {
+    throw new Error('Altitude must be a finite number');
+  }
+  if (!Number.isFinite(duration) || duration <= 0) {
     throw new Error('Duration must be positive');
   }
+  if (duration > 1e8) {
+    throw new Error('Duration is too large');
+  }
+  if (!Number.isFinite(requestedPoints)) {
+    throw new Error('Number of points must be finite');
+  }
+
+  const numPoints = Math.floor(requestedPoints);
   if (numPoints < 2) {
     throw new Error('Number of points must be at least 2');
+  }
+  if (numPoints > 5000) {
+    throw new Error('Number of points must be at most 5000');
+  }
+
+  const requestedTruthPoints = options?.truthPoints ?? Math.max(numPoints * 10, 360);
+  if (!Number.isFinite(requestedTruthPoints)) {
+    throw new Error('Number of truth points must be finite');
+  }
+  const numTruthPoints = Math.floor(requestedTruthPoints);
+  if (numTruthPoints < 2) {
+    throw new Error('Number of truth points must be at least 2');
+  }
+  if (numTruthPoints > 20000) {
+    throw new Error('Number of truth points must be at most 20000');
+  }
+
+  if (!Number.isFinite(noiseStd) || noiseStd < 0) {
+    throw new Error('Position noise standard deviation must be finite and non-negative');
+  }
+  if (!Number.isFinite(noiseVelStd) || noiseVelStd < 0) {
+    throw new Error('Velocity noise standard deviation must be finite and non-negative');
   }
   if (altitude < -RE_KM + 1) {
     throw new Error('Altitude is too low (would be inside Earth)');

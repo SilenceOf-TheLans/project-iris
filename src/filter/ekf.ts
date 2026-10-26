@@ -4,7 +4,7 @@
  * Matrix operations use simple number[][] representation (see src/types/index.ts).
  */
 
-import { Matrix, EKF_Options } from "../types";
+import type { Matrix } from "../types";
 
 // ---------------------------------------------------------------------------
 // Helper: matrix multiplication  A · B
@@ -144,8 +144,8 @@ function scalarMultiply(c: number, A: Matrix): Matrix {
 export class EKF {
   private xHat: Matrix;   // current state estimate x̂
   private P: Matrix;      // current covariance P
-  private f: (x: Matrix) => Matrix;      // process model
-  private F: (x: Matrix) => Matrix;      // Jacobian of f
+  private f: (x: Matrix, dt: number) => Matrix; // process model
+  private F: (x: Matrix, dt: number) => Matrix; // Jacobian of f
   private h: (x: Matrix) => Matrix;      // measurement model
   private H: (x: Matrix) => Matrix;      // Jacobian of h
   private Q: Matrix | ((dt: number) => Matrix); // process noise matrix or builder
@@ -158,8 +158,8 @@ export class EKF {
    * type for workcase parameterization; all function signatures use Matrix).
    */
   constructor(options: {
-    f: (x: Matrix) => Matrix;
-    F: (x: Matrix) => Matrix;
+    f: (x: Matrix, dt: number) => Matrix;
+    F: (x: Matrix, dt: number) => Matrix;
     h: (x: Matrix) => Matrix;
     H: (x: Matrix) => Matrix;
     Q: Matrix | ((dt: number) => Matrix);
@@ -191,13 +191,16 @@ export class EKF {
 
   /** predict(dt) – predict one step forward */
   predict(dt: number): void {
-    // x̂⁻ = f(x̂₋₁, u=0, w=0)
-    const xBar = this.f(this.xHat);
+    if (!isFinite(dt) || dt <= 0) {
+      throw new Error(`Invalid prediction interval: ${dt}`);
+    }
 
-    // P⁻ = F · P₋₁ · Fᵀ + Q_d
-    // F is evaluated at the previous state (stored in options' F closure over x̂₋₁)
-    // But per spec: F: (x: Matrix) => Matrix, so we evaluate at x̂₋₁ = this.xHat
-    const F = this.F(this.xHat);
+    // x̂⁻ = f(x̂₋₁, u=0, w=0). The interval is passed explicitly so f/F/Q
+    // always use the same dt, even if the caller holds other mutable state.
+    const xBar = this.f(this.xHat, dt);
+
+    // P⁻ = F · P₋₁ · Fᵀ + Q_d, with F evaluated at the prior state.
+    const F = this.F(this.xHat, dt);
 
     const Ft = transpose(F);
     const F_P_Ft = multiply(multiply(F, this.P), Ft);
@@ -217,10 +220,34 @@ export class EKF {
     // when two measurements are nearly collinear in the current prior (e.g.
     // range and range-rate from one ground station over a short arc, where
     // corr(range, range-rate) can approach 1). A near-singular S produces a
-    // huge, essentially arbitrary gain. Sequential scalar updates are
-    // algebraically equivalent for independent measurement noise but never
-    // require inverting a near-singular matrix.
+    // huge, essentially arbitrary gain. Sequential scalar updates with a
+    // diagonal R never require inverting a near-singular matrix.
+    //
+    // This is a sequential iterated EKF: h/H are re-linearised after each
+    // scalar correction. That is not algebraically identical to a single batch
+    // update, but it is substantially more robust when the prior is far from
+    // the measurement (e.g. the second sample of a 5-point full orbit). The
+    // Joseph covariance form keeps P symmetric positive semidefinite.
     const Rfull = typeof this.R === "function" ? this.R(this.xHat) : this.R;
+    if (Rfull.rows !== z.rows || Rfull.cols !== z.rows) {
+      throw new Error(
+        `R dimensions ${Rfull.rows}x${Rfull.cols} do not match ${z.rows} measurements`,
+      );
+    }
+
+    // The scalar strategy is only valid for uncorrelated measurement noise.
+    // Reject correlated R instead of silently dropping its off-diagonal terms.
+    for (let i = 0; i < z.rows; i++) {
+      for (let j = 0; j < z.rows; j++) {
+        if (i === j) continue;
+        const scale = Math.max(1, Math.abs(Rfull.data[i][i]), Math.abs(Rfull.data[j][j]));
+        if (Math.abs(Rfull.data[i][j]) > 1e-12 * scale) {
+          throw new Error(
+            "Correlated measurement noise (off-diagonal R) is not supported",
+          );
+        }
+      }
+    }
 
     for (let i = 0; i < z.rows; i++) {
       const Rii = Rfull.data[i][i];
@@ -228,9 +255,15 @@ export class EKF {
         throw new Error(`Invalid measurement variance at index ${i}: ${Rii}`);
       }
 
-      // Re-evaluate the nonlinear measurement model after each scalar update.
+      // Re-linearise at the current (partially corrected) state.
       const hAll = this.h(this.xHat);
       const HAll = this.H(this.xHat);
+      if (hAll.rows !== z.rows || HAll.rows !== z.rows) {
+        throw new Error(
+          `Measurement model dimensions do not match ${z.rows} measurements`,
+        );
+      }
+
       const yi = z.data[i][0] - hAll.data[i][0];
 
       const Hi: Matrix = { data: [HAll.data[i].slice()], rows: 1, cols: HAll.cols };

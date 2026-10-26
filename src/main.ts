@@ -17,7 +17,7 @@ let loadedData: LoadedData | null = null;
 let dataIdx = 0;
 let ekf: EKF | null = null;
 let kfState: number[] | null = null; // naive dead-reckoning baseline [px,py,pz,vx,vy,vz] or 2D
-let currentDt = 1;
+let filterError = false;
 let qVar = 1e-6;
 let rStd = 10;
 let lastEstimateKm: [number, number] = [0, 0];
@@ -47,6 +47,14 @@ function propagateWithSTM(
   s: number[],
   dt: number,
 ): { state: number[]; Phi: number[][] } {
+  if (!Number.isFinite(dt) || dt <= 0) {
+    throw new Error(`Invalid propagation interval: ${dt} s`);
+  }
+  const n = Math.max(1, Math.ceil(dt / 5));
+  if (n > 2_000_000) {
+    throw new Error(`Propagation interval too large: ${dt} s`);
+  }
+
   let r = [s[0], s[1], s[2]];
   let v = [s[3], s[4], s[5]];
   let Phi: number[][] = Array.from({ length: 6 }, (_, i) =>
@@ -83,7 +91,6 @@ function propagateWithSTM(
   const addScaled = (A: number[][], B: number[][], c: number): number[][] =>
     A.map((row, i) => row.map((val, j) => val + c * B[i][j]));
 
-  const n = Math.max(1, Math.ceil(dt / 5));
   const h = dt / n;
 
   for (let step = 0; step < n; step++) {
@@ -216,8 +223,11 @@ function buildQ4(q: number): (dt: number) => Matrix {
 
 function buildLeoEKF(data: LoadedData): void {
   const p0 = data.position[0], v0 = data.velocity[0];
-  // Offset initial guess so convergence is visible (~10 km, ~10 m/s)
-  const x0 = [p0[0] + 8000, p0[1] - 6000, p0[2] + 4000, v0[0] + 10, v0[1] - 8, v0[2] + 5];
+  // Offset the in-plane initial guess so convergence is visible (~10 km,
+  // ~10 m/s). Do not offset z/vz: on the equatorial/planar passes used by the
+  // app those states are weakly observable from range/range-rate, so an
+  // artificial z offset would persist as a hidden bias.
+  const x0 = [p0[0] + 8000, p0[1] - 6000, p0[2], v0[0] + 10, v0[1] - 8, v0[2]];
   const P0d: number[][] = Array.from({ length: 6 }, () => new Array(6).fill(0));
   for (let i = 0; i < 3; i++) P0d[i][i] = 1e8;      // (10 km)^2
   for (let i = 3; i < 6; i++) P0d[i][i] = 1e4;      // (100 m/s)^2
@@ -225,25 +235,24 @@ function buildLeoEKF(data: LoadedData): void {
   const [gsx, gsy, gsz] = GROUND_STATION;
 
   // Two-body propagation with the full variational state-transition matrix.
-  // `currentDt` is set by stepFrame to the full measurement gap (no clamping).
-  // predict() calls f and F back-to-back with the same state, so cache the
-  // expensive RK4 + STM integration instead of computing it twice.
+  // predict(dt) calls f and F back-to-back with the same state and dt, so
+  // cache the expensive RK4 + STM integration instead of computing it twice.
   let stmCache: { state: number[]; dt: number; result: { state: number[]; Phi: number[][] } } | null = null;
-  const propagateCached = (x: Matrix) => {
+  const propagateCached = (x: Matrix, dt: number) => {
     const s = [x.data[0][0], x.data[1][0], x.data[2][0], x.data[3][0], x.data[4][0], x.data[5][0]];
     if (
       stmCache &&
-      stmCache.dt === currentDt &&
+      stmCache.dt === dt &&
       stmCache.state.every((v, i) => v === s[i])
     ) {
       return stmCache.result;
     }
-    const result = propagateWithSTM(s, currentDt);
-    stmCache = { state: s, dt: currentDt, result };
+    const result = propagateWithSTM(s, dt);
+    stmCache = { state: s, dt, result };
     return result;
   };
-  const f = (x: Matrix): Matrix => mat(propagateCached(x).state, 6);
-  const F = (x: Matrix): Matrix => ({ data: propagateCached(x).Phi, rows: 6, cols: 6 });
+  const f = (x: Matrix, dt: number): Matrix => mat(propagateCached(x, dt).state, 6);
+  const F = (x: Matrix, dt: number): Matrix => ({ data: propagateCached(x, dt).Phi, rows: 6, cols: 6 });
   // Ground-station range / range-rate
   const h = (x: Matrix): Matrix => {
     const ex = x.data[0][0] - gsx, ey = x.data[1][0] - gsy, ez = x.data[2][0] - gsz;
@@ -292,21 +301,21 @@ function buildAttitudeEKF(data: LoadedData): void {
   // filter never follows the path. The variational STM keeps the covariance
   // honest across gaps of thousands of seconds.
   let stmCache: { state: number[]; dt: number; result: { state: number[]; Phi: number[][] } } | null = null;
-  const propagateCached = (x: Matrix) => {
+  const propagateCached = (x: Matrix, dt: number) => {
     const s = [x.data[0][0], x.data[1][0], x.data[2][0], x.data[3][0]];
     if (
       stmCache &&
-      stmCache.dt === currentDt &&
+      stmCache.dt === dt &&
       stmCache.state.every((v, i) => v === s[i])
     ) {
       return stmCache.result;
     }
-    const result = propagateWithSTM2D(s, currentDt);
-    stmCache = { state: s, dt: currentDt, result };
+    const result = propagateWithSTM2D(s, dt);
+    stmCache = { state: s, dt, result };
     return result;
   };
-  const f = (x: Matrix): Matrix => mat(propagateCached(x).state, 4);
-  const F = (x: Matrix): Matrix => ({ data: propagateCached(x).Phi, rows: 4, cols: 4 });
+  const f = (x: Matrix, dt: number): Matrix => mat(propagateCached(x, dt).state, 4);
+  const F = (x: Matrix, dt: number): Matrix => ({ data: propagateCached(x, dt).Phi, rows: 4, cols: 4 });
   const h = (x: Matrix): Matrix => ({ data: [[x.data[0][0]], [x.data[1][0]]], rows: 2, cols: 1 });
   const H = (): Matrix => ({ data: [[1, 0, 0, 0], [0, 1, 0, 0]], rows: 2, cols: 4 });
 
@@ -339,39 +348,74 @@ function rebuildFilter(): void {
 function resetToStart(): void {
   stopAnimation();
   dataIdx = 0;
-  currentDt = 1;
+  filterError = false;
   rebuildFilter();
   clearPlot();
   if (loadedData && loadedData.position.length > 0) {
     const tp = loadedData.truthPosition[0];
     lastTruthKm = [tp[0] * M_TO_KM, tp[1] * M_TO_KM];
     lastEstimateKm = [...lastTruthKm];
+    const kfKm: [number, number] = kfState
+      ? [kfState[0] * M_TO_KM, kfState[1] * M_TO_KM]
+      : lastTruthKm;
     setStatus(loadedData.time.length, loadedData.time[0], 'ready');
     setStats(lastTruthKm, lastEstimateKm);
-    updatePlot({ time: loadedData.time[0], truth: lastTruthKm, estimate: lastTruthKm, kf: lastTruthKm, measurements: [], covarianceEllipse: [lastTruthKm[0], lastTruthKm[1], 50] });
+    updatePlot({ time: loadedData.time[0], truth: lastTruthKm, estimate: lastTruthKm, kf: kfKm, measurements: [] });
   } else {
     setStatus(0, 0, 'no data');
   }
   setRunButtonLabel(false);
 }
 
+/**
+ * Convert the x–y covariance block to a 2σ ellipse for display.
+ * Returns [cx, cy, major km, minor km, angle rad]. Using the full 2×2 block
+ * preserves correlation and orientation; drawing a circle from the average
+ * variance hides both.
+ */
+function covarianceEllipse2Sigma(
+  cxKm: number,
+  cyKm: number,
+  P: Matrix,
+): [number, number, number, number, number] {
+  const sxx = Math.max(0, P.data[0][0]);
+  const syy = Math.max(0, P.data[1][1]);
+  const sxy = 0.5 * (P.data[0][1] + P.data[1][0]);
+  const mid = 0.5 * (sxx + syy);
+  const halfDiff = 0.5 * (sxx - syy);
+  const rad = Math.sqrt(Math.max(0, halfDiff * halfDiff + sxy * sxy));
+  const l1 = Math.max(0, mid + rad);
+  const l2 = Math.max(0, mid - rad);
+  const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  return [
+    cxKm,
+    cyKm,
+    2 * Math.sqrt(l1) * M_TO_KM,
+    2 * Math.sqrt(l2) * M_TO_KM,
+    angle,
+  ];
+}
+
 // One animation frame = one data point
 function stepFrame(): PlotData {
   const n = loadedData ? loadedData.position.length : 0;
+  const kfKmNow = (): [number, number] | undefined => (
+    kfState ? [kfState[0] * M_TO_KM, kfState[1] * M_TO_KM] : undefined
+  );
   if (!loadedData || !ekf || n === 0) {
-    return { time: 0, truth: lastTruthKm, estimate: lastEstimateKm, kf: lastEstimateKm, measurements: [], covarianceEllipse: [lastEstimateKm[0], lastEstimateKm[1], 50] };
+    return { time: 0, truth: lastTruthKm, estimate: lastEstimateKm, kf: kfKmNow(), measurements: [] };
   }
   if (dataIdx >= n) {
     stopAnimation();
     setRunButtonLabel(false);
     setStatus(n, loadedData.time[n - 1], 'done');
-    return { time: loadedData.time[n - 1], truth: lastTruthKm, estimate: lastEstimateKm, kf: lastEstimateKm, measurements: [], covarianceEllipse: [lastEstimateKm[0], lastEstimateKm[1], 50] };
+    return { time: loadedData.time[n - 1], truth: lastTruthKm, estimate: lastEstimateKm, kf: kfKmNow(), measurements: [] };
   }
 
   const i = dataIdx;
   const t = loadedData.time[i];
   const tPrev = i === 0 ? t : loadedData.time[i - 1];
-  const gap = i === 0 ? 0 : Math.max(0.1, t - tPrev);
+  const gap = i === 0 ? 0 : t - tPrev;
   // Truth is evaluated from the equation at the exact measurement time.
   // Nearest-sample lookup would introduce tens of kilometres of along-track
   // error whenever a measurement falls between truth-grid samples.
@@ -391,7 +435,6 @@ function stepFrame(): PlotData {
       // subdivision.
       const nSub = Math.max(6, Math.min(48, Math.ceil(gap / 20)));
       const h = gap / nSub;
-      currentDt = h;
 
       for (let k = 1; k <= nSub; k++) {
         ekf.predict(h);
@@ -407,34 +450,42 @@ function stepFrame(): PlotData {
           const tSub = tPrev + k * h;
           const truthSub = interpolateTruth(loadedData, tSub);
           const xsSub = ekf.state;
+          const Psub = ekf.covariance;
+          const estSubKm: [number, number] = [xsSub.data[0][0] * M_TO_KM, xsSub.data[1][0] * M_TO_KM];
           updatePlot({
             time: tSub,
             truth: [truthSub.position[0] * M_TO_KM, truthSub.position[1] * M_TO_KM],
-            estimate: [xsSub.data[0][0] * M_TO_KM, xsSub.data[1][0] * M_TO_KM],
-            kf: kfState ? [kfState[0] * M_TO_KM, kfState[1] * M_TO_KM] : undefined,
+            estimate: estSubKm,
+            kf: kfKmNow(),
             measurements: [],
-            covarianceEllipse: undefined,
+            covarianceEllipse: covarianceEllipse2Sigma(estSubKm[0], estSubKm[1], Psub),
           });
         }
       }
     }
 
+    // The CSV row is the sparse measurement. Regenerating a "measurement" from
+    // the interpolated truth would silently discard the user's measurement
+    // values (including any noise already present in the file), so use the
+    // stored row and add only the runtime sensor noise selected by the slider.
+    const mp = loadedData.position[i];
+    const mv = loadedData.velocity[i];
+
     let z: Matrix;
     let measKm: { x: number; y: number }[];
     if (scenario === 'leo') {
-      // Ground-station range / range-rate from noisy truth position
-      // Measurements = equation truth + runtime noise (rStd from slider)
+      // Ground-station range / range-rate from the measurement row.
       const velStd = rangeRateStd(rStd);
-      const npx = tp[0] + randn() * rStd, npy = tp[1] + randn() * rStd, npz = tp[2] + randn() * rStd;
-      const nvx = tv[0] + randn() * velStd, nvy = tv[1] + randn() * velStd, nvz = tv[2] + randn() * velStd;
+      const npx = mp[0] + randn() * rStd, npy = mp[1] + randn() * rStd, npz = mp[2] + randn() * rStd;
+      const nvx = mv[0] + randn() * velStd, nvy = mv[1] + randn() * velStd, nvz = mv[2] + randn() * velStd;
       const dx = npx - GROUND_STATION[0], dy = npy - GROUND_STATION[1], dz = npz - GROUND_STATION[2];
       const rho = Math.max(1e-6, Math.sqrt(dx * dx + dy * dy + dz * dz));
       const rr = (dx * nvx + dy * nvy + dz * nvz) / rho;
       z = { data: [[rho], [rr]], rows: 2, cols: 1 };
       measKm = [{ x: npx * M_TO_KM, y: npy * M_TO_KM }];
     } else {
-      // Attitude (2D): measurement = equation truth position + runtime noise
-      const npx = tp[0] + randn() * rStd, npy = tp[1] + randn() * rStd;
+      // Attitude (2D): measurement = stored 2D position + runtime noise.
+      const npx = mp[0] + randn() * rStd, npy = mp[1] + randn() * rStd;
       z = { data: [[npx], [npy]], rows: 2, cols: 1 };
       measKm = [{ x: npx * M_TO_KM, y: npy * M_TO_KM }];
     }
@@ -443,22 +494,21 @@ function stepFrame(): PlotData {
     const xs = ekf.state;
     const P = ekf.covariance;
     const estKm: [number, number] = [xs.data[0][0] * M_TO_KM, xs.data[1][0] * M_TO_KM];
-    const kfKm: [number, number] = kfState ? [kfState[0] * M_TO_KM, kfState[1] * M_TO_KM] : estKm;
-    const pxVar = Math.max(0, P.data[0][0]);
-    const pyVar = Math.max(0, P.data[1][1]);
-    const rKm = 2 * Math.sqrt((pxVar + pyVar) / 2) * M_TO_KM;
+    const kfKm = kfKmNow() ?? estKm;
 
     lastTruthKm = truthKm;
     lastEstimateKm = estKm;
     dataIdx += 1;
     setStatus(n, t, isAnimationRunning() ? 'running' : 'paused');
     setStats(truthKm, estKm);
-    return { time: t, truth: [truthKm[0], truthKm[1]], estimate: [estKm[0], estKm[1]], kf: [kfKm[0], kfKm[1]], measurements: measKm, covarianceEllipse: [estKm[0], estKm[1], Math.max(1, Math.min(800, rKm))] };
+    return { time: t, truth: [truthKm[0], truthKm[1]], estimate: [estKm[0], estKm[1]], kf: [kfKm[0], kfKm[1]], measurements: measKm, covarianceEllipse: covarianceEllipse2Sigma(estKm[0], estKm[1], P) };
   } catch (err) {
     logMessage(`Step ${i} failed: ${err instanceof Error ? err.message : String(err)}`);
+    filterError = true;
     stopAnimation();
     setRunButtonLabel(false);
-    return { time: t, truth: [truthKm[0], truthKm[1]], estimate: lastEstimateKm, kf: lastEstimateKm, measurements: [], covarianceEllipse: [lastEstimateKm[0], lastEstimateKm[1], 50] };
+    setStatus(n, t, 'error');
+    return { time: t, truth: [truthKm[0], truthKm[1]], estimate: lastEstimateKm, kf: kfKmNow(), measurements: [] };
   }
 }
 
@@ -467,9 +517,14 @@ function toggleRun(): boolean {
     logMessage('No EKF initialised — load data first.');
     return false;
   }
+  if (filterError) {
+    logMessage('Reset the simulation before running again after a failed step.');
+    return false;
+  }
   if (isAnimationRunning()) {
     stopAnimation();
-    setStatus(loadedData.position.length, loadedData.time[Math.min(dataIdx, loadedData.position.length - 1)], 'paused');
+    const pausedIdx = Math.max(0, Math.min(dataIdx - 1, loadedData.position.length - 1));
+    setStatus(loadedData.position.length, loadedData.time[pausedIdx], 'paused');
     return false;
   }
   if (dataIdx >= loadedData.position.length) resetToStart();
@@ -486,6 +541,18 @@ initControls(
       return;
     }
     loadedData = data as LoadedData;
+    // Match the filter to the file's actual measurement mode. Loading a 5-col
+    // planar file into the 6-state scenario (or an 11-col 3D file into the 2D
+    // scenario) otherwise silently drops a dimension.
+    let nextScenario: Scenario = scenario;
+    if (loadedData.mode === 'mode2') nextScenario = 'attitude';
+    else if (loadedData.mode === 'mode1') nextScenario = 'leo';
+    if (nextScenario !== scenario) {
+      scenario = nextScenario;
+      document.querySelectorAll('.scenario-tab').forEach((t) =>
+        t.classList.toggle('active', (t as HTMLElement).dataset.scenario === scenario),
+      );
+    }
     resetToStart();
   },
   (sc) => {
