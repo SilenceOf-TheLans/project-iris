@@ -15,6 +15,7 @@ export interface SimulationState {
 
 export const Q_RANGE: [number, number] = [1e-12, 1e-2];
 export const R_RANGE: [number, number] = [1e-2, 1e3];
+export const SPEED_RANGE: [number, number] = [0.1, 10];
 
 const SLIDER_MAX = 1000;
 
@@ -32,6 +33,12 @@ function logToSlider(value: number, min: number, max: number): number {
   return Math.round(((lv - lmin) / (lmax - lmin)) * SLIDER_MAX);
 }
 
+function formatSpeed(value: number): string {
+  if (value >= 10) return '10×';
+  if (value >= 1) return `${value.toFixed(1).replace(/\.0$/, '')}×`;
+  return `${value.toFixed(2).replace(/0$/, '')}×`;
+}
+
 export function initControls(
   onFileLoad: (data: any) => void,
   onScenarioChange: (scenario: Scenario) => void,
@@ -39,6 +46,7 @@ export function initControls(
   onRValueChange?: (value: number) => void,
   onRunToggle?: () => boolean,
   onReset?: () => void,
+  onSpeedChange?: (value: number) => void,
 ): void {
   const fileInput = document.querySelector<HTMLInputElement>('#file-input');
   fileInput?.addEventListener('change', () => {
@@ -82,6 +90,19 @@ export function initControls(
       const value = sliderToLog(parseFloat(rSlider.value), R_RANGE[0], R_RANGE[1]);
       if (rDisplay) rDisplay.textContent = value.toExponential(1);
       onRValueChange?.(value);
+    });
+  }
+
+  const speedSlider = document.querySelector<HTMLInputElement>('#speed-slider');
+  const speedDisplay = document.querySelector<HTMLElement>('#speed-value');
+  if (speedSlider) {
+    const initialSpeed = 1;
+    speedSlider.value = String(logToSlider(initialSpeed, SPEED_RANGE[0], SPEED_RANGE[1]));
+    if (speedDisplay) speedDisplay.textContent = formatSpeed(initialSpeed);
+    speedSlider.addEventListener('input', () => {
+      const value = sliderToLog(parseFloat(speedSlider.value), SPEED_RANGE[0], SPEED_RANGE[1]);
+      if (speedDisplay) speedDisplay.textContent = formatSpeed(value);
+      onSpeedChange?.(value);
     });
   }
 

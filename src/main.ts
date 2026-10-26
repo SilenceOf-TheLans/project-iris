@@ -9,6 +9,7 @@ import type { Matrix } from './types';
 import { generateSyntheticPass, interpolateTruth, type LoadedData } from './data/io';
 import { initControls, setRunButtonLabel, logMessage, type Scenario } from './ui/controls';
 import { initPlot, updatePlot, startAnimation, stopAnimation, isAnimationRunning, clearPlot, resizePlot, type PlotData } from './ui/plot';
+import { initErrorPlot, resetErrorPlot, pushErrorSample, getMeanErrorKm, redrawErrorPlot, resizeErrorPlot } from './ui/error-plot';
 
 // --- State ---
 
@@ -20,6 +21,8 @@ let kfState: number[] | null = null; // naive dead-reckoning baseline [px,py,pz,
 let filterError = false;
 let qVar = 1e-6;
 let rStd = 10;
+let simSpeed = 1;          // playback multiplier; does not change filter dynamics
+let speedAccumulator = 0;  // fractional steps carried between animation frames
 let lastEstimateKm: [number, number] = [0, 0];
 let lastTruthKm: [number, number] = [0, 0];
 
@@ -186,7 +189,7 @@ function setStatus(points: number, time: number, state: string): void {
   set('status-state', state);
 }
 
-function setStats(truthKm: [number, number], estKm: [number, number]): void {
+function setStats(truthKm: [number, number], estKm: [number, number]): number {
   const set = (id: string, txt: string) => {
     const el = document.getElementById(id);
     if (el) el.textContent = txt;
@@ -195,6 +198,13 @@ function setStats(truthKm: [number, number], estKm: [number, number]): void {
   set('stat-est', `${estKm[0].toFixed(1)}, ${estKm[1].toFixed(1)}`);
   const err = Math.hypot(truthKm[0] - estKm[0], truthKm[1] - estKm[1]);
   set('stat-err', err.toFixed(2));
+  return err;
+}
+
+function setMeanErrorStat(meanKm: number | null): void {
+  const el = document.getElementById('stat-mean-err');
+  if (!el) return;
+  el.textContent = meanKm === null ? '—' : meanKm.toFixed(2);
 }
 
 // --- EKF builders ---
@@ -349,8 +359,10 @@ function resetToStart(): void {
   stopAnimation();
   dataIdx = 0;
   filterError = false;
+  speedAccumulator = 0;
   rebuildFilter();
   clearPlot();
+  setMeanErrorStat(null);
   if (loadedData && loadedData.position.length > 0) {
     const tp = loadedData.truthPosition[0];
     lastTruthKm = [tp[0] * M_TO_KM, tp[1] * M_TO_KM];
@@ -360,9 +372,11 @@ function resetToStart(): void {
       : lastTruthKm;
     setStatus(loadedData.time.length, loadedData.time[0], 'ready');
     setStats(lastTruthKm, lastEstimateKm);
+    resetErrorPlot(loadedData.time[0], loadedData.time[loadedData.time.length - 1]);
     updatePlot({ time: loadedData.time[0], truth: lastTruthKm, estimate: lastTruthKm, kf: kfKm, measurements: [] });
   } else {
     setStatus(0, 0, 'no data');
+    resetErrorPlot(0, 1);
   }
   setRunButtonLabel(false);
 }
@@ -451,15 +465,24 @@ function stepFrame(): PlotData {
           const truthSub = interpolateTruth(loadedData, tSub);
           const xsSub = ekf.state;
           const Psub = ekf.covariance;
+          const truthSubKm: [number, number] = [
+            truthSub.position[0] * M_TO_KM,
+            truthSub.position[1] * M_TO_KM,
+          ];
           const estSubKm: [number, number] = [xsSub.data[0][0] * M_TO_KM, xsSub.data[1][0] * M_TO_KM];
+          // Sample the error along the prediction arc too, not only at the
+          // sparse measurement times. With five CSV rows this turns the error
+          // chart from five straight chords into the actual growth/correction
+          // curve between updates.
+          pushErrorSample(tSub, Math.hypot(truthSubKm[0] - estSubKm[0], truthSubKm[1] - estSubKm[1]));
           updatePlot({
             time: tSub,
-            truth: [truthSub.position[0] * M_TO_KM, truthSub.position[1] * M_TO_KM],
+            truth: truthSubKm,
             estimate: estSubKm,
             kf: kfKmNow(),
             measurements: [],
             covarianceEllipse: covarianceEllipse2Sigma(estSubKm[0], estSubKm[1], Psub),
-          });
+          }, false);
         }
       }
     }
@@ -500,7 +523,8 @@ function stepFrame(): PlotData {
     lastEstimateKm = estKm;
     dataIdx += 1;
     setStatus(n, t, isAnimationRunning() ? 'running' : 'paused');
-    setStats(truthKm, estKm);
+    const errKm = setStats(truthKm, estKm);
+    setMeanErrorStat(pushErrorSample(t, errKm));
     return { time: t, truth: [truthKm[0], truthKm[1]], estimate: [estKm[0], estKm[1]], kf: [kfKm[0], kfKm[1]], measurements: measKm, covarianceEllipse: covarianceEllipse2Sigma(estKm[0], estKm[1], P) };
   } catch (err) {
     logMessage(`Step ${i} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -508,8 +532,35 @@ function stepFrame(): PlotData {
     stopAnimation();
     setRunButtonLabel(false);
     setStatus(n, t, 'error');
+    setMeanErrorStat(getMeanErrorKm());
     return { time: t, truth: [truthKm[0], truthKm[1]], estimate: lastEstimateKm, kf: kfKmNow(), measurements: [] };
   }
+}
+
+/**
+ * Advance playback according to the speed slider.
+ *
+ * 1× = one measurement per animation frame, 0.1× = one measurement every ten
+ * frames, 10× = up to ten measurements per frame. The fractional remainder is
+ * carried between frames so low speeds stay smooth instead of rounding down to
+ * a freeze. This only changes wall-clock pacing; the filter never sees it.
+ */
+function playbackFrame(): PlotData | null {
+  speedAccumulator += simSpeed;
+  if (speedAccumulator < 1 - 1e-9) return null;
+
+  const steps = Math.min(50, Math.max(1, Math.floor(speedAccumulator + 1e-9)));
+  speedAccumulator = Math.max(0, speedAccumulator - steps);
+
+  let last: PlotData | null = null;
+  for (let k = 0; k < steps; k++) {
+    last = stepFrame();
+    if (!isAnimationRunning()) break;
+    if (k < steps - 1 && last) updatePlot(last, false);
+    if (!loadedData || dataIdx >= loadedData.position.length) break;
+  }
+  if (last) redrawErrorPlot();
+  return last;
 }
 
 function toggleRun(): boolean {
@@ -523,12 +574,14 @@ function toggleRun(): boolean {
   }
   if (isAnimationRunning()) {
     stopAnimation();
+    speedAccumulator = 0;
     const pausedIdx = Math.max(0, Math.min(dataIdx - 1, loadedData.position.length - 1));
     setStatus(loadedData.position.length, loadedData.time[pausedIdx], 'paused');
     return false;
   }
   if (dataIdx >= loadedData.position.length) resetToStart();
-  startAnimation(stepFrame);
+  speedAccumulator = 0;
+  startAnimation(playbackFrame);
   return true;
 }
 
@@ -586,9 +639,13 @@ initControls(
   },
   () => toggleRun(),
   () => resetToStart(),
+  (value) => {
+    if (Number.isFinite(value) && value > 0) simSpeed = value;
+  },
 );
 
 initPlot('plot-canvas', { canvasId: 'plot-canvas', width: 900, height: 560, showGrid: true, showLegend: true });
+initErrorPlot('error-canvas');
 
 try {
   loadedData = generateSyntheticPass({ altitude: 300, duration: 600, points: 80, noiseStd: 0, noiseVelStd: 0 });
@@ -603,10 +660,11 @@ window.addEventListener('resize', () => {
   resizeTimer = window.setTimeout(() => {
     const canvas = document.getElementById('plot-canvas') as HTMLCanvasElement | null;
     if (canvas) resizePlot(canvas, canvas.clientWidth || 900, canvas.clientHeight || 560);
+    resizeErrorPlot();
   }, 150);
 });
 
 // Debug handles
 (window as any).toggleAnimation = toggleRun;
 (window as any).resetSim = resetToStart;
-(window as any).getState = () => ({ scenario, dataIdx, qVar, rStd, points: loadedData?.position.length ?? 0 });
+(window as any).getState = () => ({ scenario, dataIdx, qVar, rStd, simSpeed, points: loadedData?.position.length ?? 0 });

@@ -47,6 +47,12 @@
         <input type="range" id="r-slider" min="0" max="1000" step="1" value="500">
       </div>
 
+      <div class="section">
+        <label for="speed-slider" class="section-label">Simulation Speed <span id="speed-value" class="value-display">1×</span></label>
+        <input type="range" id="speed-slider" min="0" max="1000" step="1" value="500">
+        <div class="hint">0.1×–10× playback · filter results unchanged.</div>
+      </div>
+
       <div class="section btn-row">
         <button id="run-button">Run EKF</button>
         <button id="reset-button" class="secondary">Reset</button>
@@ -56,6 +62,7 @@
         <div class="stat-row"><span>Truth (km)</span><span id="stat-truth">—</span></div>
         <div class="stat-row"><span>Estimate (km)</span><span id="stat-est">—</span></div>
         <div class="stat-row"><span>Error (km)</span><span id="stat-err">—</span></div>
+        <div class="stat-row"><span>Mean Error (km)</span><span id="stat-mean-err">—</span></div>
       </div>
 
       <div class="section">
@@ -70,6 +77,7 @@
         <p>LEO: 6-state orbit, range + range-rate updates. Attitude: 4-state 2D orbit, direct position updates.</p>
         <p>CSV rows are sparse measurements and are used directly; the R slider adds runtime sensor noise and sets the assumed measurement noise. The clean truth curve is regenerated from the two-body orbit equation seeded by the first row, so it stays smooth even with only 5 points.</p>
         <p>Mode 1 (11 columns) selects LEO; Mode 2 (5 columns) selects the planar 2D filter automatically. Headers and strictly increasing times are validated on load.</p>
+        <p>The lower chart plots position error versus time; the dashed horizontal line is the running mean. Simulation Speed changes playback pacing only (0.1×–10×), not the filter math.</p>
       </div>
 
       <div id="about-panel" class="help-panel">
@@ -86,6 +94,9 @@
         <canvas id="plot-canvas"></canvas>
         <div id="plot-hint">Scroll to zoom · Drag to pan · Double-click to reset · Click legend to toggle layers (keys 1-5)</div>
         <div id="plot-zoom" title="Zoom level relative to auto-fit (double-click canvas to reset)"></div>
+      </div>
+      <div id="error-wrap">
+        <canvas id="error-canvas" aria-label="Position error versus time, with running mean"></canvas>
       </div>
     </main>
   </div>

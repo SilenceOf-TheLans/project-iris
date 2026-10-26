@@ -135,6 +135,24 @@ canvas#plot-canvas {
 canvas#plot-canvas:active { cursor: grabbing; }
 canvas#plot-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+#error-wrap {
+  position: relative;
+  margin-top: 16px;
+  padding: 8px;
+  background: #050505;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+canvas#error-canvas {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 100%;
+  height: 200px;
+  display: block;
+}
+
 /* Sections */
 .section {
   margin-bottom: 14px;
@@ -263,4 +281,5 @@ button.active { animation: pulse-glow 2s ease-in-out infinite; }
   #sidebar .tabs-group { flex-direction: row; }
   #sidebar .tabs-group button { width: auto; flex: 1; }
   canvas#plot-canvas { height: 420px; }
+  canvas#error-canvas { height: 180px; }
 }

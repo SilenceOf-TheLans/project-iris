@@ -193,7 +193,15 @@ export function resetView(): void {
   redrawPlot();
 }
 
-export function updatePlot(data: PlotData): void {
+/**
+ * Append a PlotData sample to the trace history.
+ *
+ * `redraw = false` batches multiple intermediate samples (for example the
+ * substeps of a long prediction gap, or several steps at high playback speed)
+ * and avoids repainting the canvas dozens of times per animation frame. The
+ * caller must finish with a normal `updatePlot(..., true)` call.
+ */
+export function updatePlot(data: PlotData, redraw = true): void {
   updateDataRanges(data);
 
   if (data.truth && data.truth.length >= 2 && isFinite(data.truth[0]) && isFinite(data.truth[1])) {
@@ -222,7 +230,7 @@ export function updatePlot(data: PlotData): void {
     plotState.covarianceEllipse = data.covarianceEllipse;
   }
 
-  redrawPlot();
+  if (redraw) redrawPlot();
 }
 
 function ensureSpan(range: [number, number], minSpan: number): void {
@@ -260,7 +268,7 @@ export function resizePlot(canvas: HTMLCanvasElement, width: number, height: num
   redrawPlot();
 }
 
-export function startAnimation(currentDataCallback?: () => PlotData): void {
+export function startAnimation(currentDataCallback?: () => PlotData | null): void {
   if (plotState.running) return;
   plotState.running = true;
   plotState.lastTime = performance.now();
@@ -277,7 +285,9 @@ export function startAnimation(currentDataCallback?: () => PlotData): void {
         measurements: [],
       };
       const data = currentDataCallback ? currentDataCallback() : defaultData;
-      updatePlot(data);
+      // A null callback result means this frame was a playback-speed skip:
+      // there is no new simulation state to draw, so keep the existing plot.
+      if (data) updatePlot(data);
     } catch (err) {
       console.error('Plot animation step failed:', err);
     }
