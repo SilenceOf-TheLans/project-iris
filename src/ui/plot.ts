@@ -68,7 +68,7 @@ interface UserView {
 
 export const AXIS_STYLE = {
   color: '#f0f0f0',
-  width: 2.5,
+  width: 1.5,
   titleColor: '#ffffff',
   titleFont: 'bold 11px monospace',
   tickColor: '#d0d0d0',
