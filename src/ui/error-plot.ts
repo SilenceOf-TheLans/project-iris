@@ -24,10 +24,18 @@ interface ErrorView {
   y1: number;
 }
 
+export interface ErrorSummary {
+  meanKm: number | null;
+  minKm: number | null;
+  maxKm: number | null;
+}
+
 const COLORS = {
   background: '#000000',
   grid: '#2a2a2a',
-  axis: '#b0b0b0',
+  axis: '#e8e8e8',
+  tick: '#d0d0d0',
+  axisTitle: '#ffffff',
   border: '#333333',
   error: '#ffb000',
   mean: '#8a8a8a',
@@ -38,6 +46,8 @@ const COLORS = {
 let canvasId = 'error-canvas';
 let samples: ErrorSample[] = [];
 let meanKm: number | null = null;
+let minKm: number | null = null;
+let maxKm: number | null = null;
 let errorSum = 0;
 let errorCount = 0;
 let timeRange: [number, number] = [0, 1];
@@ -96,6 +106,8 @@ export function resizeErrorPlot(): void {
 export function resetErrorPlot(startTime = 0, endTime = 1): void {
   samples = [];
   meanKm = null;
+  minKm = null;
+  maxKm = null;
   errorSum = 0;
   errorCount = 0;
   userView = null;
@@ -108,31 +120,29 @@ export function resetErrorPlot(startTime = 0, endTime = 1): void {
 
 /**
  * Record one error sample (measurement update or prediction substep). Returns
- * the new running mean so the caller can display it in the sidebar without
- * keeping a second accumulator.
+ * the running summary so the caller can display mean/min/max in the sidebar
+ * without keeping a second accumulator.
  */
-export function pushErrorSample(time: number, errorKm: number): number | null {
-  if (!Number.isFinite(time) || !Number.isFinite(errorKm)) return meanKm;
+export function pushErrorSample(time: number, errorKm: number): ErrorSummary {
+  if (!Number.isFinite(time) || !Number.isFinite(errorKm)) return getErrorSummary();
   const err = Math.max(0, errorKm);
   samples.push({ time, errorKm: err });
   errorSum += err;
   errorCount += 1;
   meanKm = errorSum / errorCount;
-  return meanKm;
+  if (minKm === null || err < minKm) minKm = err;
+  if (maxKm === null || err > maxKm) maxKm = err;
+  return getErrorSummary();
 }
 
-export function getMeanErrorKm(): number | null {
-  return meanKm;
+export function getErrorSummary(): ErrorSummary {
+  return { meanKm, minKm, maxKm };
 }
 
 function autoYMax(): number {
-  let maxError = 0;
-  for (const s of samples) {
-    if (s.errorKm > maxError) maxError = s.errorKm;
-  }
-  const targetMax = samples.length === 0
+  const targetMax = maxKm === null
     ? 1
-    : Math.max(0.01, maxError * 1.15);
+    : Math.max(0.01, maxKm * 1.15);
   const info = niceTicks(0, targetMax, 4);
   let step = info.step;
   if (!(step > 0) || !Number.isFinite(step)) step = targetMax;
@@ -343,7 +353,7 @@ export function redrawErrorPlot(): void {
     x: 64,
     y: 28,
     width: Math.max(30, cssW - 82),
-    height: Math.max(30, cssH - 62),
+    height: Math.max(30, cssH - 68),
   };
 
   graphRect = graph;
@@ -411,33 +421,26 @@ export function redrawErrorPlot(): void {
   }
   ctx.stroke();
 
-  // Axes and tick labels.
-  ctx.strokeStyle = COLORS.axis;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(graph.x, graph.y);
-  ctx.lineTo(graph.x, graph.y + graph.height);
-  ctx.lineTo(graph.x + graph.width, graph.y + graph.height);
-  ctx.stroke();
-
-  ctx.fillStyle = COLORS.muted;
+  // Tick labels. The axes themselves are drawn after the data so they stay
+  // crisp and visible even when the trace reaches the plot boundary.
+  ctx.fillStyle = COLORS.tick;
   ctx.font = '10px monospace';
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   for (const v of yTicks) {
-    ctx.fillText(formatTick(v, yDecimals), graph.x - 7, mapY(v, graph, y0, y1));
+    ctx.fillText(formatTick(v, yDecimals), graph.x - 9, mapY(v, graph, y0, y1));
   }
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   for (const t of xTicks) {
-    ctx.fillText(formatTick(t, xDecimals), mapX(t, graph, t0, t1), graph.y + graph.height + 5);
+    ctx.fillText(formatTick(t, xDecimals), mapX(t, graph, t0, t1), graph.y + graph.height + 9);
   }
 
-  ctx.fillStyle = COLORS.text;
-  ctx.font = '11px monospace';
+  ctx.fillStyle = COLORS.axisTitle;
+  ctx.font = 'bold 11px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('time (s)', graph.x + graph.width / 2, graph.y + graph.height + 25);
+  ctx.fillText('time (s)', graph.x + graph.width / 2, graph.y + graph.height + 27);
 
   ctx.save();
   ctx.translate(15, graph.y + graph.height / 2);
@@ -503,7 +506,27 @@ export function redrawErrorPlot(): void {
 
   ctx.restore();
 
+  // Outer frame stays subtle; the x/y axes and their tick marks are drawn on
+  // top of the trace with a brighter, heavier stroke.
   ctx.strokeStyle = COLORS.border;
   ctx.lineWidth = 1;
   ctx.strokeRect(graph.x + 0.5, graph.y + 0.5, graph.width - 1, graph.height - 1);
+
+  ctx.strokeStyle = COLORS.axis;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(graph.x, graph.y);
+  ctx.lineTo(graph.x, graph.y + graph.height);
+  ctx.lineTo(graph.x + graph.width, graph.y + graph.height);
+  for (const t of xTicks) {
+    const px = mapX(t, graph, t0, t1);
+    ctx.moveTo(px, graph.y + graph.height);
+    ctx.lineTo(px, graph.y + graph.height + 5);
+  }
+  for (const v of yTicks) {
+    const py = mapY(v, graph, y0, y1);
+    ctx.moveTo(graph.x, py);
+    ctx.lineTo(graph.x - 5, py);
+  }
+  ctx.stroke();
 }

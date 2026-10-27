@@ -9,7 +9,7 @@ import type { Matrix } from './types';
 import { generateSyntheticPass, interpolateTruth, type LoadedData } from './data/io';
 import { initControls, setRunButtonLabel, logMessage, type Scenario } from './ui/controls';
 import { initPlot, updatePlot, startAnimation, stopAnimation, isAnimationRunning, clearPlot, resizePlot, type PlotData } from './ui/plot';
-import { initErrorPlot, resetErrorPlot, pushErrorSample, getMeanErrorKm, redrawErrorPlot, resizeErrorPlot } from './ui/error-plot';
+import { initErrorPlot, resetErrorPlot, pushErrorSample, getErrorSummary, redrawErrorPlot, resizeErrorPlot, type ErrorSummary } from './ui/error-plot';
 
 // --- State ---
 
@@ -201,10 +201,14 @@ function setStats(truthKm: [number, number], estKm: [number, number]): number {
   return err;
 }
 
-function setMeanErrorStat(meanKm: number | null): void {
-  const el = document.getElementById('stat-mean-err');
-  if (!el) return;
-  el.textContent = meanKm === null ? '—' : meanKm.toFixed(2);
+function setErrorStats(stats: ErrorSummary | null): void {
+  const set = (id: string, value: number | null | undefined) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value == null ? '—' : value.toFixed(2);
+  };
+  set('stat-mean-err', stats?.meanKm);
+  set('stat-max-err', stats?.maxKm);
+  set('stat-min-err', stats?.minKm);
 }
 
 // --- EKF builders ---
@@ -362,7 +366,7 @@ function resetToStart(): void {
   speedAccumulator = 0;
   rebuildFilter();
   clearPlot();
-  setMeanErrorStat(null);
+  setErrorStats(null);
   if (loadedData && loadedData.position.length > 0) {
     const tp = loadedData.truthPosition[0];
     lastTruthKm = [tp[0] * M_TO_KM, tp[1] * M_TO_KM];
@@ -524,7 +528,7 @@ function stepFrame(): PlotData {
     dataIdx += 1;
     setStatus(n, t, isAnimationRunning() ? 'running' : 'paused');
     const errKm = setStats(truthKm, estKm);
-    setMeanErrorStat(pushErrorSample(t, errKm));
+    setErrorStats(pushErrorSample(t, errKm));
     return { time: t, truth: [truthKm[0], truthKm[1]], estimate: [estKm[0], estKm[1]], kf: [kfKm[0], kfKm[1]], measurements: measKm, covarianceEllipse: covarianceEllipse2Sigma(estKm[0], estKm[1], P) };
   } catch (err) {
     logMessage(`Step ${i} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -532,7 +536,7 @@ function stepFrame(): PlotData {
     stopAnimation();
     setRunButtonLabel(false);
     setStatus(n, t, 'error');
-    setMeanErrorStat(getMeanErrorKm());
+    setErrorStats(getErrorSummary());
     return { time: t, truth: [truthKm[0], truthKm[1]], estimate: lastEstimateKm, kf: kfKmNow(), measurements: [] };
   }
 }
