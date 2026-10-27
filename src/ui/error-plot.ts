@@ -10,7 +10,7 @@
  * keyboard zoom and pan navigation as the orbital plot.
  */
 
-import { formatTick, niceTicks } from './plot';
+import { AXIS_STYLE, formatTick, niceTicks } from './plot';
 
 interface ErrorSample {
   time: number;
@@ -33,9 +33,6 @@ export interface ErrorSummary {
 const COLORS = {
   background: '#000000',
   grid: '#2a2a2a',
-  tick: '#d0d0d0',
-  axisTitle: '#ffffff',
-  zeroAxis: '#f0f0f0',
   border: '#333333',
   error: '#ffb000',
   mean: '#8a8a8a',
@@ -434,8 +431,8 @@ export function redrawErrorPlot(): void {
 
   // Tick labels in the margins. The plot frame stays subtle so it does not
   // compete with the trace.
-  ctx.fillStyle = COLORS.tick;
-  ctx.font = '10px monospace';
+  ctx.fillStyle = AXIS_STYLE.tickColor;
+  ctx.font = AXIS_STYLE.tickFont;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   for (const v of yTicks) {
@@ -448,8 +445,8 @@ export function redrawErrorPlot(): void {
     ctx.fillText(formatTick(t, xDecimals), mapX(t, graph, t0, t1), graph.y + graph.height + 9);
   }
 
-  ctx.fillStyle = COLORS.axisTitle;
-  ctx.font = 'bold 11px monospace';
+  ctx.fillStyle = AXIS_STYLE.titleColor;
+  ctx.font = AXIS_STYLE.titleFont;
   ctx.textAlign = 'center';
   ctx.fillText('time (s)', graph.x + graph.width / 2, graph.y + graph.height + 27);
 
@@ -529,8 +526,8 @@ export function redrawErrorPlot(): void {
   if (showZeroX || showZeroY) {
     const zeroX = mapX(0, graph, t0, t1);
     const zeroY = mapY(0, graph, y0, y1);
-    ctx.strokeStyle = COLORS.zeroAxis;
-    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = AXIS_STYLE.color;
+    ctx.lineWidth = AXIS_STYLE.width;
     ctx.beginPath();
     if (showZeroX) {
       ctx.moveTo(zeroX, graph.y);

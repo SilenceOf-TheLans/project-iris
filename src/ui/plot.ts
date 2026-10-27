@@ -66,10 +66,18 @@ interface UserView {
   spanY: number;
 }
 
+export const AXIS_STYLE = {
+  color: '#f0f0f0',
+  width: 2.5,
+  titleColor: '#ffffff',
+  titleFont: 'bold 11px monospace',
+  tickColor: '#d0d0d0',
+  tickFont: '10px monospace',
+} as const;
+
 const COLORS = {
   background: '#000000',
   grid: '#2a2a2a',
-  axis: '#b0b0b0',
   truth: '#00ff66',
   ekf: '#00ffff',
   kf: '#ff4444',
@@ -565,7 +573,6 @@ function redrawPlot(): void {
   ctx.fillRect(0, 0, cssW, cssH);
 
   if (plotState.showGrid) drawGrid(ctx, graphRect);
-  drawAxes(ctx, graphRect);
 
   // Clip data layers to the full graph box so traces / measurements /
   // covariance never spill outside the graph's data limits (e.g. into the
@@ -578,6 +585,9 @@ function redrawPlot(): void {
   drawMeasurements(ctx, graphRect);
   if (plotState.covarianceEllipse && plotState.layers.ellipse) drawCovarianceEllipse(ctx, graphRect, plotState.covarianceEllipse);
   ctx.restore();
+
+  // Draw the coordinate axes above the traces, matching the error chart.
+  drawAxes(ctx, graphRect);
 
   if (plotState.showLegend) drawLegend(ctx, graphRect);
 }
@@ -725,9 +735,9 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   const { x, y, width, height } = graphRect;
 
   ctx.save();
-  // Data axes (x=0 / y=0) when they fall inside the visible view.
-  ctx.strokeStyle = COLORS.axis;
-  ctx.lineWidth = 1.5;
+  // Coordinate axes at x=0 / y=0 when they fall inside the visible view.
+  ctx.strokeStyle = AXIS_STYLE.color;
+  ctx.lineWidth = AXIS_STYLE.width;
   ctx.beginPath();
   if (x0 <= 0 && 0 <= x1) {
     const zx = dataXToPixel(0, graphRect);
@@ -742,8 +752,8 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   ctx.stroke();
 
   // Axis titles with units.
-  ctx.fillStyle = COLORS.legendText;
-  ctx.font = '11px monospace';
+  ctx.fillStyle = AXIS_STYLE.titleColor;
+  ctx.font = AXIS_STYLE.titleFont;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillText('x (km)', x + width / 2, y + height + 20);
@@ -755,7 +765,8 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   const xTicks = ticksAtStep(x0, x1, step);
   const yTicks = ticksAtStep(y0, y1, step);
   const dec = tickDecimals(step);
-  ctx.font = '10px monospace';
+  ctx.fillStyle = AXIS_STYLE.tickColor;
+  ctx.font = AXIS_STYLE.tickFont;
   for (const t of xTicks) {
     ctx.fillText(formatTick(t, dec), dataXToPixel(t, graphRect), y + height + 5);
   }
@@ -769,7 +780,8 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
     maxLabelW = Math.max(maxLabelW, ctx.measureText(formatTick(t, dec)).width);
   }
   const titleX = Math.max(10, x - 10 - maxLabelW - 12);
-  ctx.font = '11px monospace';
+  ctx.fillStyle = AXIS_STYLE.titleColor;
+  ctx.font = AXIS_STYLE.titleFont;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.save();
