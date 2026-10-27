@@ -33,7 +33,6 @@ export interface ErrorSummary {
 const COLORS = {
   background: '#000000',
   grid: '#2a2a2a',
-  axis: '#e8e8e8',
   tick: '#d0d0d0',
   axisTitle: '#ffffff',
   border: '#333333',
@@ -421,8 +420,8 @@ export function redrawErrorPlot(): void {
   }
   ctx.stroke();
 
-  // Tick labels. The axes themselves are drawn after the data so they stay
-  // crisp and visible even when the trace reaches the plot boundary.
+  // Tick labels in the margins. The plot frame stays subtle so it does not
+  // compete with the trace.
   ctx.fillStyle = COLORS.tick;
   ctx.font = '10px monospace';
   ctx.textAlign = 'right';
@@ -506,27 +505,8 @@ export function redrawErrorPlot(): void {
 
   ctx.restore();
 
-  // Outer frame stays subtle; the x/y axes and their tick marks are drawn on
-  // top of the trace with a brighter, heavier stroke.
+  // Keep the plot frame subtle so it does not compete with the data.
   ctx.strokeStyle = COLORS.border;
   ctx.lineWidth = 1;
   ctx.strokeRect(graph.x + 0.5, graph.y + 0.5, graph.width - 1, graph.height - 1);
-
-  ctx.strokeStyle = COLORS.axis;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(graph.x, graph.y);
-  ctx.lineTo(graph.x, graph.y + graph.height);
-  ctx.lineTo(graph.x + graph.width, graph.y + graph.height);
-  for (const t of xTicks) {
-    const px = mapX(t, graph, t0, t1);
-    ctx.moveTo(px, graph.y + graph.height);
-    ctx.lineTo(px, graph.y + graph.height + 5);
-  }
-  for (const v of yTicks) {
-    const py = mapY(v, graph, y0, y1);
-    ctx.moveTo(graph.x, py);
-    ctx.lineTo(graph.x - 5, py);
-  }
-  ctx.stroke();
 }
