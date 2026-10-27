@@ -35,6 +35,7 @@ const COLORS = {
   grid: '#2a2a2a',
   tick: '#d0d0d0',
   axisTitle: '#ffffff',
+  zeroAxis: '#f0f0f0',
   border: '#333333',
   error: '#ffb000',
   mean: '#8a8a8a',
@@ -61,6 +62,8 @@ const MIN_VIEW_SPAN_X = 1e-6; // seconds
 const MAX_VIEW_SPAN_X = 1e9;  // seconds
 const MIN_VIEW_SPAN_Y = 1e-9; // km
 const MAX_VIEW_SPAN_Y = 1e9;  // km
+const AUTO_X_PAD_FRACTION = 0.02;
+const AUTO_Y_PAD_FRACTION = 0.06;
 const ZOOM_STEP = 1.25;
 
 function getCanvas(): HTMLCanvasElement | null {
@@ -154,7 +157,13 @@ function effectiveRanges(): ErrorView {
   if (userView) return { ...userView };
   const t0 = timeRange[0];
   const t1 = timeRange[1] > t0 ? timeRange[1] : t0 + 1;
-  return { x0: t0, x1: t1, y0: 0, y1: autoYMax() };
+  const span = t1 - t0;
+  const yMax = autoYMax();
+  // Leave a small margin beyond zero on both axes so the bold x=0 / y=0
+  // coordinate lines sit inside the plot instead of looking like a border.
+  const xPad = span * AUTO_X_PAD_FRACTION;
+  const yPad = yMax * AUTO_Y_PAD_FRACTION;
+  return { x0: t0 - xPad, x1: t1 + xPad, y0: -yPad, y1: yMax };
 }
 
 function updateErrorZoomLabel(): void {
@@ -164,7 +173,10 @@ function updateErrorZoomLabel(): void {
     el.textContent = '';
     return;
   }
-  const autoSpanX = Math.max(1e-9, timeRange[1] - timeRange[0]);
+  const autoSpanX = Math.max(
+    1e-9,
+    (timeRange[1] - timeRange[0]) * (1 + 2 * AUTO_X_PAD_FRACTION),
+  );
   const spanX = Math.max(1e-9, userView.x1 - userView.x0);
   const zoom = autoSpanX / spanX;
   el.textContent = zoom >= 1 ? `${zoom.toFixed(1)}×` : `${zoom.toFixed(2)}×`;
@@ -509,4 +521,25 @@ export function redrawErrorPlot(): void {
   ctx.strokeStyle = COLORS.border;
   ctx.lineWidth = 1;
   ctx.strokeRect(graph.x + 0.5, graph.y + 0.5, graph.width - 1, graph.height - 1);
+
+  // Coordinate axes at x = 0 and y = 0. These are distinct from the plot
+  // frame and are emphasized above the trace.
+  const showZeroX = t0 <= 0 && 0 <= t1;
+  const showZeroY = y0 <= 0 && 0 <= y1;
+  if (showZeroX || showZeroY) {
+    const zeroX = mapX(0, graph, t0, t1);
+    const zeroY = mapY(0, graph, y0, y1);
+    ctx.strokeStyle = COLORS.zeroAxis;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    if (showZeroX) {
+      ctx.moveTo(zeroX, graph.y);
+      ctx.lineTo(zeroX, graph.y + graph.height);
+    }
+    if (showZeroY) {
+      ctx.moveTo(graph.x, zeroY);
+      ctx.lineTo(graph.x + graph.width, zeroY);
+    }
+    ctx.stroke();
+  }
 }

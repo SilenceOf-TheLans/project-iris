@@ -69,7 +69,7 @@ interface UserView {
 const COLORS = {
   background: '#000000',
   grid: '#2a2a2a',
-  axis: '#e8e8e8',
+  axis: '#b0b0b0',
   truth: '#00ff66',
   ekf: '#00ffff',
   kf: '#ff4444',
@@ -565,6 +565,7 @@ function redrawPlot(): void {
   ctx.fillRect(0, 0, cssW, cssH);
 
   if (plotState.showGrid) drawGrid(ctx, graphRect);
+  drawAxes(ctx, graphRect);
 
   // Clip data layers to the full graph box so traces / measurements /
   // covariance never spill outside the graph's data limits (e.g. into the
@@ -577,10 +578,6 @@ function redrawPlot(): void {
   drawMeasurements(ctx, graphRect);
   if (plotState.covarianceEllipse && plotState.layers.ellipse) drawCovarianceEllipse(ctx, graphRect, plotState.covarianceEllipse);
   ctx.restore();
-
-  // Draw the zero axes above the traces so they stay legible where the orbit
-  // crosses the origin.
-  drawAxes(ctx, graphRect);
 
   if (plotState.showLegend) drawLegend(ctx, graphRect);
 }
@@ -728,10 +725,9 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
   const { x, y, width, height } = graphRect;
 
   ctx.save();
-  // Data axes (x=0 / y=0) when they fall inside the visible view. These are
-  // the prominent coordinate axes, not the outer plot frame.
+  // Data axes (x=0 / y=0) when they fall inside the visible view.
   ctx.strokeStyle = COLORS.axis;
-  ctx.lineWidth = 2.5;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   if (x0 <= 0 && 0 <= x1) {
     const zx = dataXToPixel(0, graphRect);
@@ -747,7 +743,7 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
 
   // Axis titles with units.
   ctx.fillStyle = COLORS.legendText;
-  ctx.font = 'bold 11px monospace';
+  ctx.font = '11px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillText('x (km)', x + width / 2, y + height + 20);
@@ -773,7 +769,7 @@ function drawAxes(ctx: CanvasRenderingContext2D, graphRect: GraphRect): void {
     maxLabelW = Math.max(maxLabelW, ctx.measureText(formatTick(t, dec)).width);
   }
   const titleX = Math.max(10, x - 10 - maxLabelW - 12);
-  ctx.font = 'bold 11px monospace';
+  ctx.font = '11px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.save();
